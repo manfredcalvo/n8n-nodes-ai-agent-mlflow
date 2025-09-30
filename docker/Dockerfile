@@ -13,8 +13,8 @@ RUN mkdir -p /opt/n8n-custom-nodes && \
     chown -R node:node /opt/n8n-custom-nodes
 
 ENV N8N_CUSTOM_EXTENSIONS="/opt/n8n-custom-nodes"
-ENV DATABRICKS_HOST="https://adb-984752964297111.11.azuredatabricks.net/"
-ENV DATABRICKS_TOKEN="dapi0ae278f6a7b481085549ed4c3d2214de"
+ENV DATABRICKS_HOST="<DATABRICKS_HOST>"
+ENV DATABRICKS_TOKEN="<DATABRICKS_TOKEN>"
 
 USER node
 ENTRYPOINT ["tini", "--", "/docker-entrypoint.sh"]

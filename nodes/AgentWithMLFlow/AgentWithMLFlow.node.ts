@@ -15,7 +15,7 @@ export class AgentWithMLFlow implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'AI Agent with MLFlow',
 		name: 'agentWithMLFlow',
-		icon: { light: 'file:AgentWithLangfuseLight.icon.svg', dark: 'file:AgentWithLangfuseDark.icon.svg' },
+		icon: { light: 'file:AgentWithMLFlowLight.icon.svg', dark: 'file:AgentWithMLFlowDark.icon.svg' },
 		group: ['transform'],
 		description: 'Generates an action plan and executes it. Can use external tools.',
 		defaults: {
