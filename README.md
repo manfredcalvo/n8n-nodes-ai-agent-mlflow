@@ -2,7 +2,7 @@
 
 > This project is proudly developed and maintained by **Wistron DXLab**.
 
-![node-example](https://github.com/rorubyy/n8n-nodes-ai-agent-langfuse/blob/main/assets/node-example.png?raw=true)
+![node-example](https://github.com/manfredcalvo/n8n-nodes-ai-agent-mlflow/blob/main/assets/node-example.png?raw=true)
 
 An n8n community node that integrates [MLFlow](https://mlflow.org/) observability into your AI Agent workflows.
 Supports tool-calling agents, memory, structured output, and full tracing of reasoning steps.
