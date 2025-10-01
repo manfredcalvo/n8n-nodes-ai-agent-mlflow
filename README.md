@@ -4,16 +4,15 @@
 
 ![node-example](https://github.com/rorubyy/n8n-nodes-ai-agent-langfuse/blob/main/assets/node-example.png?raw=true)
 
-An n8n community node that integrates [Langfuse](https://langfuse.com) observability into your AI Agent workflows.
+An n8n community node that integrates [MLFlow](https://mlflow.org/) observability into your AI Agent workflows.
 Supports tool-calling agents, memory, structured output, and full tracing of reasoning steps.
 
-npm package: [https://www.npmjs.com/package/n8n-nodes-ai-agent-langfuse](https://www.npmjs.com/package/n8n-nodes-ai-agent-langfuse)
+npm package: [https://www.npmjs.com/package/n8n-nodes-ai-agent-mlflow](https://www.npmjs.com/package/n8n-nodes-ai-agent-mlflow)
 
 ## Features
 
 - AI Agent Integration: Works with LangChain’s AgentExecutor and ToolCallingAgent
-- Observability: Automatic Langfuse tracing for LLM reasoning, tool calls, and outputs
-- Custom Metadata: Inject sessionId, userId, and structured JSON metadata into each trace
+- Observability: Automatic MLFlow tracing for LLM reasoning, tool calls, and outputs
 
 [n8n](https://n8n.io/) is a [fair-code licensed](https://docs.n8n.io/reference/license/) workflow automation platform.
 
@@ -39,18 +38,18 @@ For **n8n v0.187+**, install directly from the UI:
 ### Docker Installation (Recommended for Production)
 A preconfigured Docker setup is available in the `docker/` directory:
 
-1. Clone the repository and navigate to the docker/ directory
+1. Clone the repository and navigate to the root directory
     ```bash
-    git clone https://github.com/rorubyy/n8n-nodes-ai-agent-langfuse.git
-    cd n8n-nodes-ai-agent-langfuse/docker
+    git clone https://github.com/manfredcalvo/n8n-nodes-ai-agent-mlflow.git
+    cd n8n-nodes-ai-agent-mlflow
     ```
 2. Build the Docker image
     ```bash
-    docker build -t n8n:nodes-ai-agent-langfuse .
+    docker build -f docker/Dockerfile -t n8n:nodes-ai-agent-mlflow .
     ```
 3. Run the container
     ```bash
-    docker run -it -p 5678:5678 n8n:nodes-ai-agent-langfuse
+    docker run -it -p 5678:5678 n8n:nodes-ai-agent-mlflow
     ```
 You can now access n8n at http://localhost:5678
 
@@ -137,7 +136,7 @@ Here’s how a single request looks inside Langfuse:
 - Compatible with:
   - OpenAI official API (https://api.openai.com)
   - Any OpenAI-compatible LLM (e.g. via LiteLLM, LocalAI, Azure OpenAI)
-  - Langfuse Cloud and self-hosted instances
+  - MLFlow in Databricks and self-hosted instances
 
 ## Resources
 
