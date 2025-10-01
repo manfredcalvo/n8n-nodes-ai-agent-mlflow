@@ -1,152 +1,202 @@
-# n8n-nodes-ai-agent-langfuse
+# n8n-nodes-ai-agent-mlflow (Databricks MLflow)
 
 ![node-example](https://github.com/manfredcalvo/n8n-nodes-ai-agent-mlflow/blob/main/assets/node-example.png?raw=true)
 
-An n8n community node that integrates [MLFlow](https://mlflow.org/) observability into your AI Agent workflows.
-Supports tool-calling agents, memory, structured output, and full tracing of reasoning steps.
+An **n8n community node** that adds **Databricks MLflow observability** to your **AI Agent** workflows.  
+Supports **tool-calling agents**, **memory**, **structured output**, and **full tracing** of reasoning steps, tool calls, and final responses.
 
-npm package: [https://www.npmjs.com/package/n8n-nodes-ai-agent-mlflow](https://www.npmjs.com/package/n8n-nodes-ai-agent-mlflow)
+npm: **[n8n-nodes-ai-agent-mlflow](https://www.npmjs.com/package/n8n-nodes-ai-agent-mlflow)**
+
+---
+
+- [Features](#features)  
+- [Installation](#installation)  
+- [Credentials (Databricks)](#credentials-databricks)  
+- [Operations](#operations)  
+- [Usage](#usage)  
+- [Compatibility](#compatibility)  
+- [Resources](#resources)  
+- [Version History](#version-history)  
+- [License](#license)
+
+---
 
 ## Features
 
-- AI Agent Integration: Works with LangChain’s AgentExecutor and ToolCallingAgent
-- Observability: Automatic MLFlow tracing for LLM reasoning, tool calls, and outputs
+- **AI Agent**: Works with LangChain (AgentExecutor, ToolCallingAgent) and OpenAI-compatible providers.
+- **MLflow 3.0 Observability (Databricks)**: Creates **traces**, **spans** (LLM/tool), **metrics**, **tags**, and **artifacts** for audits and evaluation.
+- **First-class Databricks**: Built to log into **Databricks MLflow** (best UI/UX for GenAI tracing and evaluation).
 
-[n8n](https://n8n.io/) is a [fair-code licensed](https://docs.n8n.io/reference/license/) workflow automation platform.
+> n8n is a [fair-code licensed](https://docs.n8n.io/reference/license/) workflow automation platform.
 
-[Installation](#installation)  
-[Credentials](#credentials)  <!-- delete if no auth needed -->  
-[Operations](#operations)  
-[Compatibility](#compatibility)  
-[Usage](#usage)  <!-- delete if not using this section -->  
-[Resources](#resources)  
-[Version history](#version-history)  <!-- delete if not using this section -->  
+---
 
 ## Installation
-Follow the [installation guide](https://docs.n8n.io/integrations/community-nodes/installation/) in the official n8n documentation for community nodes.
 
-### Community Nodes (Recommended)
-For **n8n v0.187+**, install directly from the UI:
-1. Go to Settings → Community Nodes
-2. Click **Install**
-3. Enter `n8n-nodes-ai-agent-langfuse` in Enter npm package name
-4. Agree to the risks of using community nodes
-5. Select Install
+Follow the official n8n guide for Community Nodes:  
+https://docs.n8n.io/integrations/community-nodes/installation/
 
-### Docker Installation (Recommended for Production)
-A preconfigured Docker setup is available in the `docker/` directory:
+### UI (Recommended)
 
-1. Clone the repository and navigate to the root directory
-    ```bash
-    git clone https://github.com/manfredcalvo/n8n-nodes-ai-agent-mlflow.git
-    cd n8n-nodes-ai-agent-mlflow
-    ```
-2. Build the Docker image
-    ```bash
-    docker build -f docker/Dockerfile -t n8n:nodes-ai-agent-mlflow .
-    ```
-3. Run the container
-    ```bash
-    docker run -it -p 5678:5678 n8n:nodes-ai-agent-mlflow
-    ```
-You can now access n8n at http://localhost:5678
+For **n8n v0.187+**:
 
-### Manual Installation
-For a standard installation without Docker:
+1. **Settings → Community Nodes**  
+2. **Install**  
+3. Enter: `n8n-nodes-ai-agent-mlflow`  
+4. Accept the community node risk prompt  
+5. **Install**
+
+### Docker (Recommended for Production)
+
 ```bash
-# Go to your n8n installation directory
-cd ~/.n8n 
-# Install the node
-npm install n8n-nodes-ai-agent-langfuse
-# Restart n8n to apply the node
+git clone https://github.com/manfredcalvo/n8n-nodes-ai-agent-mlflow.git
+cd n8n-nodes-ai-agent-mlflow
+
+docker build -f docker/Dockerfile -t n8n:nodes-ai-agent-mlflow .
+docker run -it -p 5678:5678 n8n:nodes-ai-agent-mlflow
+```
+
+Access n8n at: <http://localhost:5678>
+
+### Manual (Without Docker)
+
+```bash
+# go to your n8n install
+cd ~/.n8n
+# install the node
+npm install n8n-nodes-ai-agent-mlflow
+# restart n8n
 n8n start
 ```
-## Credential 
 
-This credential is used to:
-- Enable Langfuse tracing, by sending structured request/response logs to your Langfuse instance
+---
 
-### Langfuse Settings
-|Field Name|Description|Example|
-|-----|-----|-----|
-Langfuse Base URL|The base URL of your Langfuse instance|`https://cloud.langfuse.com` or self-hosted URL|
-|Public Key *|Langfuse public key used for tracing authentication|`pk-xxx`|
-Secret Key *|Langfuse secret key used for tracing authentication|`sk-xxx`|
+## Credentials (Databricks)
 
-> 🔑 How to find your Langfuse keys: <br>
-> Log in to your Langfuse dashboard, then go to: <br>
-> Settings → Projects → [Your Project] to retrieve publicKey and secretKey.
+This node sends **traces**, **spans**, **metrics**, and optionally **artifacts** to **Databricks MLflow**.
 
-### Credential UI Preview
-Once filled out, your credential should look like this:
+| Field | Description | Example |
+|---|---|---|
+| **Databricks Host** | Workspace base URL | `https://<your-workspace>.cloud.databricks.com` |
+| **Databricks Token** | PAT with write access to MLflow/Experiments | `dapi-***` |
+| **MLflow Experiment ID** | Target experiment to store runs/traces | `1111111111111111` |
+| **Default Tags (JSON)** | Tags applied to all runs | `{"project":"ai-agents","env":"dev"}` |
 
-![credentials-example](https://github.com/rorubyy/n8n-nodes-ai-agent-langfuse/blob/main/assets/langfuse-api-example.png?raw=true)
+**Environment variables (optional):**
+```bash
+export DATABRICKS_HOST="https://<your-workspace>.cloud.databricks.com"
+export DATABRICKS_TOKEN="dapi-***"
+export MLFLOW_EXPERIMENT_ID="1111111111111111"
+export MLFLOW_DEFAULT_TAGS='{"project":"ai-agents","env":"dev"}'
+```
 
-✅ After saving the credential, you're ready to use the node and see traces in your Langfuse dashboard.
+*Tips*
+- Create the experiment in the Databricks UI and copy the **experiment_id**.
+- The token must have **Write** permission on that experiment.
+
+---
 
 ## Operations
 
-This node lets you run multi-tool AI agents with full observability.
+The node executes your AI Agent (with or without tools) and records a **complete trace** in MLflow:
 
-You can trace every run with context such as `sessionId`, `userId`, and any custom metadata.
+- **LLM spans** (prompt, parameters, latency, tokens if available)
+- **Tool spans** (name, args, results, duration)
+- **Messages** (system/user/assistant)
+- **Metrics** (latencies, token counts, error flags)
+- **Tags & metadata** (sessionId, userId, workflow, env)
+- **Artifacts** (optional serialized inputs/outputs for audits/evals)
 
----
 ### Supported Fields
 
 | Field | Type | Description |
-|----------|----------|----------|
-| `sessionId` | `string` | Logical session ID to group related runs |
-| `userId` | `string` | ID representing the end user making the request |
-| `metadata` | `object` | Custom JSON object with additional context (e.g., workflowId, env) |
+|---|---|---|
+| `sessionId` | `string` | Logical session to group related runs (e.g., a chat session) |
+| `userId` | `string` | End-user identifier |
+| `traceName` | `string` | Human-readable label (e.g., `qna`, `order-bot`) |
+| `metadata` | `object` | Free-form JSON context (e.g., `workflowId`, `tenant`, `env`) |
+| `evaluate` | `boolean` | If `true`, persist extra artifacts for later evaluation |
 
-![langfuse-metadata-example](https://github.com/rorubyy/n8n-nodes-ai-agent-langfuse/blob/main/assets/langfuse-metadata-example.png?raw=true)
+> All fields become MLflow tags/attributes to power filtering in the Databricks UI.
+
 ---
-### 🧪 Example Setup
-| Input Field | Example Value |
-|----------|----------|
-| Session ID | `{{$json.sessionId}}`|
-| User ID | `test` |	
-Custom Metadata (JSON)
+
+## Usage
+
+### Quick Example (Node Inputs)
+
+| Field | Example |
+|---|---|
+| **Session ID** | `{{$json.sessionId}}` |
+| **User ID** | `enterprise-user-42` |
+| **Trace Name** | `qna` |
+| **Evaluate** | `true` |
+| **Custom Metadata (JSON)** | ```json
+{ "project":"test-project", "env":"dev", "workflow":"main-flow" }
+``` |
+
+### Example Agent Output Payload
+
+Provide the node with a structured payload like:
+
 ```json
 {
-  "project": "test-project",
-  "env": "dev",
-  "workflow": "main-flow"
+  "messages": [
+    {"role":"system","content":"You are a helpful assistant."},
+    {"role":"user","content":"Find last month's revenue and explain briefly."}
+  ],
+  "tools_called": [
+    {
+      "name": "sql.query",
+      "args": {"sql":"SELECT SUM(amount) FROM revenue WHERE month='2025-08'"},
+      "result": {"sum": 1234567}
+    }
+  ],
+  "final_answer": "Total revenue in 2025-08 was 1,234,567. It grew 8% MoM."
 }
 ```
+
+The node converts this into:
+- **Span tree** (LLM → Tool → LLM → Final)
+- **Metrics** (per-span and overall latency; tokens if available)
+- **Tags** (`sessionId`, `userId`, `traceName`, `workflow`, `env`)
+- **Artifacts** (optional JSON snapshots for audits/evals)
+
+### Session/User Grouping
+
+- Use `sessionId` to chain multiple turns of the same conversation.
+- Use `userId` to attribute requests to a specific end user.
+
 ---
-### Visual Example
-1. **Node Configuration UI**: This shows a sample n8n workflow using the AI Agent with Langfuse Node.
-
-![node-example](https://github.com/rorubyy/n8n-nodes-ai-agent-langfuse/blob/main/assets/node-example.png?raw=true)
-
-2. **Langfuse Trace Output**
-Here’s how a single request looks inside Langfuse:
-- LLM reasoning steps
-- Tool calls (with args & results)
-- Final JSON responseHere’s how traces appear inside the Langfuse dashboard.
-
-![langfuse-trace-example](https://github.com/rorubyy/n8n-nodes-ai-agent-langfuse/blob/main/assets/langfuse-trace-example.png?raw=true)
-
 
 ## Compatibility
-- Requires n8n version 1.0.0 or later
-- Compatible with:
-  - OpenAI official API (https://api.openai.com)
-  - Any OpenAI-compatible LLM (e.g. via LiteLLM, LocalAI, Azure OpenAI)
-  - MLFlow in Databricks and self-hosted instances
+
+- **n8n**: 1.0.0+  
+- **LLM Providers**:
+  - OpenAI official API
+  - OpenAI-compatible providers (LiteLLM, LocalAI, Azure OpenAI, Databricks Model Serving with OpenAI-style endpoints)
+- **MLflow**:
+  - **Databricks MLflow 3.0+** (best tracing & evaluation UX)
+
+---
 
 ## Resources
 
-- [n8n Community Node Docs](https://docs.n8n.io/integrations/community-nodes/)
-- [Langfuse Documentation](https://docs.langfuse.com/)
-- [n8n Community Forum](https://community.n8n.io/)
-- [Langfuse GitHub](https://github.com/langfuse/langfuse)
-- [n8n-nodes-langfuse-ai-agent](https://github.com/matanzvili/n8n-nodes-langfuse-ai-agent)
+- n8n Community Nodes: <https://docs.n8n.io/integrations/community-nodes/>  
+- Databricks MLflow (GenAI/Tracing): (refer to your Databricks workspace docs)  
+- MLflow (general): <https://mlflow.org/>  
+- n8n Community Forum: <https://community.n8n.io/>  
+
+> This project focuses on the **Databricks MLflow** experience for GenAI tracing and evaluation.
+
+---
 
 ## Version History
 
-- **v0.1** – Initial release with AI Agent + Langfuse integration
+- **v1.0.0** – First public release with Databricks MLflow, tool-call support, metadata, and full tracing.
+
+---
 
 ## License
-MIT © 2025 Wistron DXLab  
+
+MIT © 2025 Wistron DXLab
