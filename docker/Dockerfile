@@ -13,10 +13,6 @@ RUN mkdir -p /opt/n8n-custom-nodes && \
     chown -R node:node /opt/n8n-custom-nodes
 
 ENV N8N_CUSTOM_EXTENSIONS="/opt/n8n-custom-nodes"
-ENV DATABRICKS_HOST=""
-ENV DATABRICKS_TOKEN=""
-ENV MLFLOW_TRACKING_URI="databricks"
-ENV MLFLOW_EXPERIMENT_ID=""
 
 USER node
 ENTRYPOINT ["tini", "--", "/docker-entrypoint.sh"]

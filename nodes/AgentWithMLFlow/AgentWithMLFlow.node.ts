@@ -1,6 +1,8 @@
 import type {
 	IExecuteFunctions,
+	ILoadOptionsFunctions,
 	INodeExecutionData,
+	INodeListSearchResult,
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
@@ -72,6 +74,75 @@ export class AgentWithMLFlow implements INodeType {
 					},
 				},
 				default: '',
+			},
+			{
+				displayName: 'MLflow Experiment',
+				name: 'experimentMode',
+				type: 'options',
+				options: [
+					{
+						name: 'Select Existing',
+						value: 'select',
+					},
+					{
+						name: 'Create or Use Existing',
+						value: 'create',
+					},
+				],
+				default: 'select',
+				description: 'Whether to select an existing experiment or create a new one (will reuse if already exists)',
+			},
+			{
+				displayName: 'Experiment',
+				name: 'experimentId',
+				type: 'resourceLocator',
+				default: { mode: 'list', value: '' },
+				required: true,
+				displayOptions: {
+					show: {
+						experimentMode: ['select'],
+					},
+				},
+				modes: [
+					{
+						displayName: 'From List',
+						name: 'list',
+						type: 'list',
+						typeOptions: {
+							searchListMethod: 'searchExperiments',
+							searchable: true,
+						},
+					},
+					{
+						displayName: 'By ID',
+						name: 'id',
+						type: 'string',
+						validation: [
+							{
+								type: 'regex',
+								properties: {
+									regex: '^[0-9]+$',
+									errorMessage: 'Experiment ID must be a number',
+								},
+							},
+						],
+						placeholder: 'e.g. 1427538817675103',
+					},
+				],
+			},
+			{
+				displayName: 'Experiment Name',
+				name: 'experimentName',
+				type: 'string',
+				default: '',
+				required: true,
+				placeholder: 'e.g. my-ai-agent-experiment',
+				description: 'Name for the new MLflow experiment. Can be a simple name (will be created under /Users/<your-user>/) or an absolute path starting with / (e.g., /Shared/my-experiment)',
+				displayOptions: {
+					show: {
+						experimentMode: ['create'],
+					},
+				},
 			},
 			promptTypeOptions,
 			{
@@ -145,6 +216,44 @@ export class AgentWithMLFlow implements INodeType {
 				displayCondition: '={{ $parameter["enableStreaming"] === true }}',
 			},
 		],
+	};
+
+	methods = {
+		listSearch: {
+			async searchExperiments(
+				this: ILoadOptionsFunctions,
+			): Promise<INodeListSearchResult> {
+				const credentials = await this.getCredentials('databricks');
+				const databricksHost = (credentials.host as string).replace(/\/$/, '');
+				const results: INodeListSearchResult = { results: [] };
+
+				try {
+					const response = await this.helpers.httpRequest({
+						method: 'GET',
+						url: `${databricksHost}/api/2.0/mlflow/experiments/search`,
+						headers: {
+							Authorization: `Bearer ${credentials.token}`,
+						},
+						qs: {
+							max_results: 1000,
+						},
+					});
+
+					if (response.experiments && Array.isArray(response.experiments)) {
+						results.results = response.experiments.map((exp: any) => ({
+							name: exp.name,
+							value: exp.experiment_id,
+							url: `${databricksHost}/ml/experiments/${exp.experiment_id}`,
+						}));
+					}
+				} catch (error) {
+					// If error, return empty list
+					console.error('Error fetching experiments:', error);
+				}
+
+				return results;
+			},
+		},
 	};
 
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
