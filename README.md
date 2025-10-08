@@ -11,6 +11,10 @@ npm: **[n8n-nodes-ai-agent-mlflow](https://www.npmjs.com/package/n8n-nodes-ai-ag
 
 - [Features](#features)  
 - [Installation](#installation)  
+  - [Install from UI (recommended)](#install-from-ui-recommended)  
+  - [Install from source (local tarball)](#install-from-source-local-tarball)  
+  - [Docker Installation (recommended for production)](#docker-installation-recommended-for-production)  
+  - [Manual (without Docker)](#manual-without-docker)  
 - [Credentials (Databricks)](#credentials-databricks)  
 - [Operations](#operations)  
 - [Usage](#usage)  
@@ -34,9 +38,9 @@ npm: **[n8n-nodes-ai-agent-mlflow](https://www.npmjs.com/package/n8n-nodes-ai-ag
 ## Installation
 
 Follow the official n8n guide for Community Nodes:  
-https://docs.n8n.io/integrations/community-nodes/installation/
+<https://docs.n8n.io/integrations/community-nodes/installation/>
 
-### UI (Recommended)
+### Install from UI (recommended)
 
 For **n8n v0.187+**:
 
@@ -46,28 +50,119 @@ For **n8n v0.187+**:
 4. Accept the community node risk prompt  
 5. **Install**
 
-### Docker (Recommended for Production)
+---
+
+### Install from source (local tarball)
+
+When installing from the repository source, you must **build and pack** the node before using it.
 
 ```bash
 git clone https://github.com/manfredcalvo/n8n-nodes-ai-agent-mlflow.git
 cd n8n-nodes-ai-agent-mlflow
 
-docker build -f docker/Dockerfile -t n8n:nodes-ai-agent-mlflow .
-docker run -it -p 5678:5678 n8n:nodes-ai-agent-mlflow
+# REQUIRED before any build/pack:
+npm install
+npm run build
+
+# Create a local tarball (outputs something like n8n-nodes-ai-agent-mlflow-1.0.0.tgz)
+npm pack
+
+# Install the .tgz into your n8n setup
+# (replace X.Y.Z with the actual version printed by npm pack)
+cd ~/.n8n
+npm install /path/to/n8n-nodes-ai-agent-mlflow/n8n-nodes-ai-agent-mlflow-X.Y.Z.tgz
+
+# restart n8n
+n8n start
 ```
 
-Access n8n at: <http://localhost:5678>
+> Tip: You can also publish the package to a private registry and install by name/version if preferred.
 
-### Manual (Without Docker)
+---
+
+## Docker Installation (Recommended for Production)
+
+> This repo is not published on the Community Store. Install **from source** by
+> building and packing the node **before** creating the Docker image.
+
+A preconfigured Docker setup is available in the `docker/` directory.
+
+1) **Clone the repository**
+```bash
+git clone https://github.com/manfredcalvo/n8n-nodes-ai-agent-mlflow.git
+cd n8n-nodes-ai-agent-mlflow
+```
+
+2) **Build the node locally (required)**
+```bash
+# install deps and compile
+npm install
+npm run build
+
+# create a local tarball (e.g., n8n-nodes-ai-agent-mlflow-1.0.0.tgz)
+npm pack
+```
+
+3) **(Option A) Build using the repository root as context**
+```bash
+# build the image; Dockerfile is at docker/Dockerfile
+# if your Dockerfile expects the tgz name as a build-arg, pass it as below:
+PKG=$(ls -1 n8n-nodes-ai-agent-mlflow-*.tgz | head -n1)
+docker build -f docker/Dockerfile \
+  --build-arg NODE_TGZ="$PKG" \
+  -t n8n-ai-agent-mlflow .
+```
+
+4) **(Option B) Build using the docker/ directory as context**
+```bash
+# copy the packed tgz next to the Dockerfile
+cp n8n-nodes-ai-agent-mlflow-*.tgz docker/
+cd docker
+
+# build the image from inside docker/
+docker build -t n8n-ai-agent-mlflow .
+```
+
+> Your `docker/Dockerfile` should **COPY** the `.tgz` into the image and run
+> `npm install` for that tarball (so the node becomes available to n8n).  
+> Example excerpt:
+> ```dockerfile
+> ARG NODE_TGZ=n8n-nodes-ai-agent-mlflow-1.0.0.tgz
+> COPY ${NODE_TGZ} /tmp/${NODE_TGZ}
+> # install the node into n8n's data dir
+> RUN mkdir -p /home/node/.n8n && cd /home/node/.n8n && npm install /tmp/${NODE_TGZ}
+> ```
+
+5) **Run the container**
+```bash
+docker run -it -p 5678:5678 \
+  -e DATABRICKS_HOST="https://<your-workspace>.cloud.databricks.com" \
+  -e DATABRICKS_TOKEN="dapi-***" \
+  -e MLFLOW_EXPERIMENT_ID="1091378939953898" \
+  --name n8n-mlflow \
+  n8n-ai-agent-mlflow
+```
+
+You can now access n8n at <http://localhost:5678>.
+
+---
+
+### Manual (without Docker)
+
+If you want to install directly from **npm**:
 
 ```bash
 # go to your n8n install
 cd ~/.n8n
-# install the node
+
+# install the node from npm
 npm install n8n-nodes-ai-agent-mlflow
+
 # restart n8n
 n8n start
 ```
+
+If you want to install directly from a **local build** (tarball), use the steps in **Install from source (local tarball)**.
 
 ---
 
@@ -77,16 +172,16 @@ This node sends **traces**, **spans**, **metrics**, and optionally **artifacts**
 
 | Field | Description | Example |
 |---|---|---|
-| **Databricks Host** | Workspace base URL | `https://<your-workspace>.cloud.databricks.com` |
+| **Databricks Host** | Workspace base URL | `https://e2-demo-field-eng.cloud.databricks.com` |
 | **Databricks Token** | PAT with write access to MLflow/Experiments | `dapi-***` |
-| **MLflow Experiment ID** | Target experiment to store runs/traces | `1111111111111111` |
+| **MLflow Experiment ID** | Target experiment to store runs/traces | `1091378939953898` |
 | **Default Tags (JSON)** | Tags applied to all runs | `{"project":"ai-agents","env":"dev"}` |
 
 **Environment variables (optional):**
 ```bash
 export DATABRICKS_HOST="https://<your-workspace>.cloud.databricks.com"
 export DATABRICKS_TOKEN="dapi-***"
-export MLFLOW_EXPERIMENT_ID="1111111111111111"
+export MLFLOW_EXPERIMENT_ID="1091378939953898"
 export MLFLOW_DEFAULT_TAGS='{"project":"ai-agents","env":"dev"}'
 ```
 
