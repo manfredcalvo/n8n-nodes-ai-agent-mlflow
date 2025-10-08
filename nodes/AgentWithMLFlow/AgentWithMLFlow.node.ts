@@ -22,6 +22,12 @@ export class AgentWithMLFlow implements INodeType {
 			name: 'AI Agent with MLFlow',
 		},
 		version: 2,
+		credentials: [
+			{
+				name: 'databricks',
+				required: true,
+			},
+		],
 		codex: {
 			categories: ['AI'],
 			subcategories: {

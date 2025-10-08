@@ -37,13 +37,7 @@ import {
 
 import { SYSTEM_MESSAGE } from '../src/utils/prompt';
 
-// Initialize MLflow only if experiment ID is provided
-if (process.env.MLFLOW_EXPERIMENT_ID) {
-  mlflow.init({
-    trackingUri: process.env.MLFLOW_TRACKING_URI || "databricks",
-    experimentId: process.env.MLFLOW_EXPERIMENT_ID,
-  });
-}
+// MLflow will be initialized dynamically per execution based on credentials
 
 /**
  * Creates an agent executor with the given configuration
@@ -196,6 +190,27 @@ export async function toolsAgentExecute(
     this: IExecuteFunctions | ISupplyDataFunctions,
 ): Promise<INodeExecutionData[][]> {
     this.logger.debug('Executing Tools Agent V2');
+
+    // Get Databricks credentials
+    const credentials = await this.getCredentials('databricks');
+
+    // Set environment variables for MLflow to use
+    process.env.DATABRICKS_HOST = credentials.host as string;
+    process.env.DATABRICKS_TOKEN = credentials.token as string;
+
+    // Initialize MLflow with credentials and environment variable for experiment ID
+    const experimentId = process.env.MLFLOW_EXPERIMENT_ID;
+    if (!experimentId) {
+        throw new NodeOperationError(
+            this.getNode(),
+            'MLFLOW_EXPERIMENT_ID environment variable is required',
+        );
+    }
+
+    mlflow.init({
+        trackingUri: process.env.MLFLOW_TRACKING_URI || "databricks",
+        experimentId: experimentId,
+    });
 
     const returnData: INodeExecutionData[] = [];
     const items = this.getInputData();

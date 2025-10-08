@@ -86,15 +86,15 @@ docker build -f docker/Dockerfile -t n8n:ai-agent-mlflow .
 
 ```bash
 docker run -it -p 5678:5678 \
-  -e DATABRICKS_HOST="https://your-workspace.cloud.databricks.com" \
-  -e DATABRICKS_TOKEN="dapi-your-token" \
-  -e MLFLOW_TRACKING_URI="databricks" \
   -e MLFLOW_EXPERIMENT_ID="your-experiment-id" \
+  -e MLFLOW_TRACKING_URI="databricks" \
   -v ~/.n8n:/home/node/.n8n \
   n8n:ai-agent-mlflow
 ```
 
 Access n8n at [http://localhost:5678](http://localhost:5678)
+
+> **Note:** Databricks host and token are now configured via n8n credentials. Only the experiment ID needs to be set as an environment variable.
 
 ---
 
@@ -122,30 +122,46 @@ n8n start
 
 ## Configuration
 
-### Required Environment Variables
+### Databricks Credentials
 
-The node requires these environment variables to send traces to Databricks MLflow:
+This node uses **n8n credentials** for Databricks authentication combined with environment variables for MLflow configuration.
+
+#### 1. Setting Up Credentials in n8n
+
+1. **Open n8n** and navigate to **Credentials** in the left sidebar
+2. Click **"Add Credential"** and search for **"Databricks"**
+3. Fill in the required fields:
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| **Host** | Your Databricks workspace URL | `https://adb-xxxxx.xx.azure.databricks.com` |
+| **Personal Access Token** | Token with MLflow write access | `dapixxxxxxxxxxxxxxxxxxxxxx` |
+
+4. Click **"Create"** to save the credential
+5. When adding the **AI Agent with MLflow** node to your workflow, select this credential
+
+> **Note:** The credential includes a built-in test that verifies connectivity to your Databricks workspace.
+
+#### 2. Required Environment Variables
+
+The following environment variables are still needed for MLflow configuration:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `DATABRICKS_HOST` | Your Databricks workspace URL | `https://e2-demo-field-eng.cloud.databricks.com` |
-| `DATABRICKS_TOKEN` | Personal Access Token with MLflow write access | `dapi-***` |
-| `MLFLOW_TRACKING_URI` | MLflow tracking backend | `databricks` |
 | `MLFLOW_EXPERIMENT_ID` | Target experiment for traces | `1427538817675103` |
-
-### Getting Databricks Credentials
-
-1. **Workspace URL** - Copy from your browser when logged into Databricks
-2. **Access Token** - User Settings → Developer → Access Tokens → Generate New Token
-3. **Experiment ID** - Create an experiment in MLflow UI, copy the ID from URL
+| `MLFLOW_TRACKING_URI` | MLflow tracking backend (optional) | `databricks` (default) |
 
 **Example:**
 ```bash
-export DATABRICKS_HOST="https://e2-demo-field-eng.cloud.databricks.com"
-export DATABRICKS_TOKEN="dapi7fb35ac06a4ed47fa1dfb788dfe1e0be"
-export MLFLOW_TRACKING_URI="databricks"
 export MLFLOW_EXPERIMENT_ID="1427538817675103"
+export MLFLOW_TRACKING_URI="databricks"
 ```
+
+### Getting Databricks Information
+
+1. **Workspace URL** - Copy from your browser when logged into Databricks
+2. **Access Token** - Go to User Settings → Developer → Access Tokens → Generate New Token
+3. **Experiment ID** - Create an experiment in MLflow UI, copy the ID from the URL
 
 ---
 
@@ -247,17 +263,19 @@ Tools (if any)
 
 **Cause:** Invalid experiment ID or workspace URL
 **Solution:**
-- Verify `MLFLOW_EXPERIMENT_ID` matches an existing experiment
-- Check `DATABRICKS_HOST` is the full workspace URL (e.g., `https://your-workspace.cloud.databricks.com`)
+- Verify `MLFLOW_EXPERIMENT_ID` environment variable matches an existing experiment
+- Check the **Host** field in your Databricks credential is the full workspace URL (e.g., `https://adb-xxxxx.xx.azure.databricks.com`)
 - Create a new experiment in MLflow UI if needed
 
 #### 3. No traces appearing in MLflow
 
-**Cause:** Missing environment variables
+**Cause:** Missing or incorrect configuration
 **Solution:**
-- Ensure all 4 required environment variables are set: `DATABRICKS_HOST`, `DATABRICKS_TOKEN`, `MLFLOW_TRACKING_URI`, `MLFLOW_EXPERIMENT_ID`
-- Restart n8n after setting environment variables
-- Check n8n logs for any MLflow connection errors
+- Verify you have selected a valid Databricks credential in the node configuration
+- Test your credential by clicking "Test" in the credential setup
+- Ensure `MLFLOW_EXPERIMENT_ID` environment variable is set correctly
+- Check that the experiment ID exists in your Databricks workspace
+- Review n8n logs for any MLflow connection errors
 
 #### 4. "400 status code (no body)" from OpenAI/Databricks
 
@@ -361,7 +379,7 @@ You may see this warning in logs:
 - ✅ Full ToolCallingAgent support
 - ✅ MCP Toolkit detection and expansion
 - ✅ Tool validation and auto-correction
-- ✅ Environment variable configuration
+- ✅ **n8n credentials support for Databricks authentication** (host & token)
 - ✅ Streaming support
 - ✅ Fallback model support
 - ✅ Enhanced error messages
