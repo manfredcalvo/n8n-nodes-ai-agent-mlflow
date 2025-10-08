@@ -576,11 +576,17 @@ export class CallbackHandler extends BaseCallbackHandler {
               ? this.runMap.get(parentRunId)
               : undefined
 
-    const span = mlflow.startSpan({name: runName, spanType: type, inputs:{
-      ...attributes,
-      metadata: this.joinTagsAndMetaData(tags, metadata)    
-    },
-    parent: parentSpan
+    const joinedMetadata = this.joinTagsAndMetaData(tags, metadata);
+    const inputs: Record<string, unknown> = { ...attributes };
+    if (joinedMetadata !== undefined) {
+      inputs.metadata = joinedMetadata;
+    }
+
+    const span = mlflow.startSpan({
+      name: runName,
+      spanType: type,
+      inputs,
+      parent: parentSpan
     });
 
     if(parentRunId){
