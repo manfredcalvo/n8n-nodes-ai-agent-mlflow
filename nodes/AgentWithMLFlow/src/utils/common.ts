@@ -316,6 +316,20 @@ export async function getTools(
 ): Promise<Array<DynamicStructuredTool | Tool>> {
     const tools = (await getConnectedTools(ctx, true, false)) as Array<DynamicStructuredTool | Tool>;
 
+    // Ensure tools have required fields to prevent LangChain errors
+    tools.forEach((tool, index) => {
+        // Ensure name is a valid string
+        if (!tool.name || typeof tool.name !== 'string') {
+            ctx.logger.warn(`Tool at index ${index} missing name, setting default`);
+            tool.name = `tool_${index}`;
+        }
+        // Ensure description is a valid string
+        if (!tool.description || typeof tool.description !== 'string') {
+            ctx.logger.warn(`Tool '${tool.name}' missing description, setting default`);
+            tool.description = `Tool: ${tool.name}`;
+        }
+    });
+
     // If an output parser is available, create a dynamic tool to validate the final output.
     if (outputParser) {
         const schema = getOutputParserSchema(outputParser);

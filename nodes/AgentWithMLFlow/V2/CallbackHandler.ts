@@ -19,12 +19,6 @@ import type { ChainValues } from "@langchain/core/utils/types";
 import { getLogger } from "log4js";
 import * as mlflow from "mlflow-tracing";
 
-type LangfusePrompt = {
-  name: string;
-  version: number;
-  isFallback: boolean;
-};
-
 export type LlmMessage = {
   role: string;
   content: BaseMessageFields["content"];
@@ -46,14 +40,12 @@ type ConstructorParams = {
 
 export class CallbackHandler extends BaseCallbackHandler {
   name = "MLFlowCallbackHandler";
-  private promptToParentRunMap;
   private runMap: Map<string, mlflow.LiveSpan> = new Map();
 
   public last_trace_id: string | null = null;
 
   constructor(params?: ConstructorParams) {
     super();
-    this.promptToParentRunMap = new Map<string, LangfusePrompt>();
   }
 
   get logger() {
@@ -90,7 +82,7 @@ export class CallbackHandler extends BaseCallbackHandler {
 
       const filter_chains = ["runnablelambda", "runnablemap", "toolcallingagentoutputparser"]
 
-      const filter_span = filter_chains.some(sub => runName.toLowerCase().includes(sub))
+      const filter_span = runName ? filter_chains.some(sub => runName.toLowerCase().includes(sub)) : false
 
       if(filter_span){
           // const parentSpan = parentRunId &&  this.runMap.has(parentRunId)
@@ -102,8 +94,6 @@ export class CallbackHandler extends BaseCallbackHandler {
           // }
         return;
       }
-
-      this.registerLangfusePrompt(parentRunId, metadata);
 
       let chat_history = 'chat_history' in inputs ? inputs['chat_history']: undefined
 
@@ -228,13 +218,6 @@ export class CallbackHandler extends BaseCallbackHandler {
       }
     }
 
-    const registeredPrompt = this.promptToParentRunMap.get(
-      parentRunId ?? "root",
-    );
-    if (registeredPrompt && parentRunId) {
-      this.deregisterLangfusePrompt(parentRunId);
-    }
-
     this.startAndRegisterOtelSpan({
       type: mlflow.SpanType.CHAT_MODEL,
       runName: runName,
@@ -305,7 +288,6 @@ export class CallbackHandler extends BaseCallbackHandler {
           output: finalOutput,
         },
       });
-      this.deregisterLangfusePrompt(runId);
     } catch (e) {
       this.logger.debug(e instanceof Error ? e.message : String(e));
     }
@@ -578,29 +560,6 @@ export class CallbackHandler extends BaseCallbackHandler {
     }
   }
 
-  private registerLangfusePrompt(
-    parentRunId?: string,
-    metadata?: Record<string, unknown>,
-  ): void {
-    /*
-    Register a prompt for linking to a generation with the same parentRunId.
-
-    `parentRunId` must exist when we want to do any prompt linking to a generation. If it does not exist, it means the execution is solely a Prompt template formatting without any following LLM invocation, so no generation will be created to link to.
-    For the simplest chain, a parent run is always created to wrap the individual runs consisting of prompt template formatting and LLM invocation.
-    So, we do not need to register any prompt for linking if parentRunId is missing.
-    */
-    if (metadata && "langfusePrompt" in metadata && parentRunId) {
-      this.promptToParentRunMap.set(
-        parentRunId,
-        metadata.langfusePrompt as LangfusePrompt,
-      );
-    }
-  }
-
-  private deregisterLangfusePrompt(runId: string): void {
-    this.promptToParentRunMap.delete(runId);
-  }
-
   private startAndRegisterOtelSpan(params: {
     type?: mlflow.SpanType;
     runName: string;
@@ -686,27 +645,7 @@ export class CallbackHandler extends BaseCallbackHandler {
     if (metadata2) {
       Object.assign(finalDict, metadata2);
     }
-    return this.stripLangfuseKeysFromMetadata(finalDict);
-  }
-
-  private stripLangfuseKeysFromMetadata(
-    metadata?: Record<string, unknown>,
-  ): Record<string, unknown> | undefined {
-    if (!metadata) {
-      return;
-    }
-
-    const langfuseKeys = [
-      "langfusePrompt",
-      "langfuseUserId",
-      "langfuseSessionId",
-    ];
-
-    return Object.fromEntries(
-      Object.entries(metadata).filter(
-        ([key, _]) => !langfuseKeys.includes(key),
-      ),
-    );
+    return Object.keys(finalDict).length > 0 ? finalDict : undefined;
   }
 
   /** Not all models supports tokenUsage in llmOutput, can use AIMessage.usage_metadata instead */

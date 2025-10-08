@@ -37,10 +37,13 @@ import {
 
 import { SYSTEM_MESSAGE } from '../src/utils/prompt';
 
-mlflow.init({
-  trackingUri: "databricks",
-  experimentId: "2219716542827291",
-});
+// Initialize MLflow only if experiment ID is provided
+if (process.env.MLFLOW_EXPERIMENT_ID) {
+  mlflow.init({
+    trackingUri: process.env.MLFLOW_TRACKING_URI || "databricks",
+    experimentId: process.env.MLFLOW_EXPERIMENT_ID,
+  });
+}
 
 /**
  * Creates an agent executor with the given configuration
@@ -338,12 +341,14 @@ export async function toolsAgentExecute(
                 const error = result.reason as Error;
                 if (this.continueOnFail()) {
                     returnData.push({
-                        json: { error: error.message },
+                        json: { error: error.message, stack: error.stack },
                         pairedItem: { item: itemIndex },
                     });
                     return;
                 } else {
-                    throw new NodeOperationError(this.getNode(), error);
+                    // Add more context to the error
+                    const enhancedError = new Error(`Agent execution failed: ${error.message}\n\nOriginal stack:\n${error.stack}`);
+                    throw new NodeOperationError(this.getNode(), enhancedError);
                 }
             }
             const response = result.value;

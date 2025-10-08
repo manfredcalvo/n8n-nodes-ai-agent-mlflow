@@ -144,8 +144,9 @@ export function getConnectionHintNoticeField(
 
     if (groupedConnections.size === 1) {
         const [[connection, locales]] = Array.from(groupedConnections);
+        const locale = locales[0] || '';
 
-        displayName = `This node must be connected to ${determineArticle(locales[0])} ${locales[0]
+        displayName = `This node must be connected to ${determineArticle(locale)} ${locale
             .toLowerCase()
             .replace(
                 /^ai /,

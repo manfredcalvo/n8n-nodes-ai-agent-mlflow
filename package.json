@@ -32,9 +32,6 @@
   ],
   "n8n": {
     "n8nNodesApiVersion": 1,
-    "credentials": [
-      "dist/credentials/LangfuseCustomApi.credentials.js"
-    ],
     "nodes": [
       "dist/nodes/AgentWithLangfuse/AgentWithMLFlow.node.js"
     ]
