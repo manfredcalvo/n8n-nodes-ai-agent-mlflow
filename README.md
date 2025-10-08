@@ -10,8 +10,7 @@ npm: **[n8n-nodes-ai-agent-mlflow](https://www.npmjs.com/package/n8n-nodes-ai-ag
 ---
 
 - [Features](#features)  
-- [Installation](#installation)  
-  - [Install from UI (recommended)](#install-from-ui-recommended)  
+- [Installation](#installation) 
   - [Install from source (local tarball)](#install-from-source-local-tarball)  
   - [Docker Installation (recommended for production)](#docker-installation-recommended-for-production)  
   - [Manual (without Docker)](#manual-without-docker)  
@@ -36,21 +35,6 @@ npm: **[n8n-nodes-ai-agent-mlflow](https://www.npmjs.com/package/n8n-nodes-ai-ag
 ---
 
 ## Installation
-
-Follow the official n8n guide for Community Nodes:  
-<https://docs.n8n.io/integrations/community-nodes/installation/>
-
-### Install from UI (recommended)
-
-For **n8n v0.187+**:
-
-1. **Settings → Community Nodes**  
-2. **Install**  
-3. Enter: `n8n-nodes-ai-agent-mlflow`  
-4. Accept the community node risk prompt  
-5. **Install**
-
----
 
 ### Install from source (local tarball)
 
