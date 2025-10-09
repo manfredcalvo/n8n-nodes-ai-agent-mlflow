@@ -8,6 +8,7 @@ Built on LangChain's ToolCallingAgent, this node can optionally add comprehensiv
 **Key Features:**
 - **Full AI Agent** - Tool calling, memory, structured outputs, streaming
 - **Optional MLflow Tracing** - Enable/disable MLflow logging with a single toggle
+- **Automatic Experiment Management** - Uses workflow ID as experiment name (auto-create/reuse)
 - **MCP Support** - Works with Model Context Protocol (MCP) toolkits
 - **Databricks-First** - Built specifically for Databricks MLflow 3.0+ (when enabled)
 
@@ -128,8 +129,9 @@ n8n start
 MLflow logging is **disabled by default**. To enable it:
 
 1. Add the **AI Agent with MLflow** node to your workflow
-2. Toggle **"Enable MLflow Logging"** to ON
-3. Configure Databricks credentials and experiment (options appear when enabled)
+2. Toggle **"Enable MLflow Tracking"** to ON
+3. Configure Databricks credentials (credential selector appears when enabled)
+4. The node will **automatically** use your workflow ID as the experiment name
 
 ### Databricks Credentials (Required only if MLflow is enabled)
 
@@ -138,7 +140,6 @@ This node uses **n8n credentials** for Databricks authentication. No environment
 #### Setting Up Credentials in n8n
 
 ![Credential Setup](./docs/images/credential-setup.png)
-<!-- Image should show: n8n credentials modal with "Databricks" credential form, showing Host and Token fields filled in -->
 
 1. **Open n8n** and navigate to **Credentials** in the left sidebar
 2. Click **"Add Credential"** and search for **"Databricks"**
@@ -154,39 +155,29 @@ This node uses **n8n credentials** for Databricks authentication. No environment
 
 > **Note:** The credential includes a built-in test that verifies connectivity to your Databricks workspace.
 
-### MLflow Experiment Configuration (When MLflow is enabled)
+### MLflow Experiment Management (Automatic)
 
-When MLflow logging is enabled, you can select experiments in two ways:
+When MLflow tracking is enabled, the node **automatically manages experiments** for you:
 
-#### By ID
-Simply enter the numeric experiment ID (e.g., `1427538817675103`)
+- **Experiment Name**: Automatically set to `/Shared/n8n-workflows-{workflow-id}`
+- **Auto-Creation**: If the experiment doesn't exist, it's created automatically
+- **Auto-Reuse**: If the experiment exists, it's reused automatically
+- **One Workflow = One Experiment**: Each n8n workflow gets its own dedicated MLflow experiment
+- **Shared Workspace**: Experiments are created in `/Shared/` for team accessibility
 
-#### By Name
-Choose from two options:
-- **From List** - Select from your existing experiments in a searchable dropdown
-- **Name** - Enter a custom experiment name (e.g., `my-experiment` or `/Shared/team-experiment`)
-  - If the experiment exists, it will be used automatically
-  - If it doesn't exist and **"Create If Not Exists"** is enabled (default), it will be created
-  - Simple names are created under `/Users/<your-user>/`
-  - Absolute paths starting with `/` are used as-is
+**Example:**
+- Workflow ID: `abc-123-def-456`
+- Experiment Name: `/Shared/n8n-workflows-abc-123-def-456`
 
-<img src="./docs/images/experiment-selection.png" alt="Experiment Selection" width="400"/>
-
-<!-- Image should show: Node settings panel with experiment configuration section, showing dropdown with list of experiments and "Create new" option -->
-
-**Example configurations:**
-
-| Input | Result |
-|-------|--------|
-| `my-agent` | Created as `/Users/<your-email>/my-agent` |
-| `/Shared/team-agents` | Created/used as `/Shared/team-agents` |
-| `1427538817675103` | Uses existing experiment with this ID |
-| Select from dropdown | Uses the selected existing experiment |
+This ensures:
+- ✅ **Consistency** - All runs from the same workflow are grouped together
+- ✅ **Simplicity** - No manual experiment configuration needed
+- ✅ **Organization** - Easy to track and compare runs per workflow
+- ✅ **Team Access** - Shared experiments visible to all workspace users
 
 ### Getting Databricks Information
 
 ![Getting Databricks Info](./docs/images/databricks-token-generation.png)
-<!-- Image should show: Databricks UI with User Settings → Developer → Access Tokens page open, highlighting the "Generate new token" button -->
 
 1. **Workspace URL** - Copy from your browser when logged into Databricks
    - Example: `https://adb-xxxxx.xx.azuredatabricks.net`
@@ -201,7 +192,7 @@ Choose from two options:
 
 ### Basic Agent Setup
 
-![Basic Setup Steps](./docs/images/basic-setup-steps.gif)
+<img src="./docs/images/basic-setup-steps.png" alt="Basic Setup Steps" width="400"/>
 
 1. **Add Agent Node** - Drag "AI Agent with MLFlow" to your workflow
 2. **Connect Chat Model** - Add OpenAI, Databricks, or compatible model
@@ -335,20 +326,21 @@ Tools (if any)
 
 #### 2. "404 Not Found" from MLflow
 
-**Cause:** Invalid experiment ID or workspace URL
+**Cause:** Invalid workspace URL or insufficient permissions
 **Solution:**
-- Verify you have selected a valid experiment in the node configuration
 - Check the **Host** field in your Databricks credential is the full workspace URL (e.g., `https://adb-xxxxx.xx.azure.databricks.com`)
-- Try creating a new experiment using the "Create New" option
+- Verify your token has permissions to create/access experiments
+- Ensure your token has access to the `/Shared/` workspace folder
 
 #### 3. No traces appearing in MLflow
 
 **Cause:** Missing or incorrect configuration
 **Solution:**
+- Verify you have enabled MLflow tracking in the node settings
 - Verify you have selected a valid Databricks credential in the node configuration
 - Test your credential by clicking "Test" in the credential setup
-- Ensure you have selected or created an experiment in the node configuration
 - Review n8n logs for any MLflow connection errors
+- Check that the experiment was auto-created in Databricks under `/Shared/n8n-workflows-{workflow-id}`
 
 #### 4. "400 status code (no body)" from OpenAI/Databricks
 
@@ -458,19 +450,15 @@ You may see this warning in logs:
 
 ## Version History
 
-### v0.1.0 (Current)
-- Initial release with optional MLflow tracing
-- Full ToolCallingAgent support
-- MCP Toolkit detection and expansion
-- Tool validation and auto-correction
-- **Optional MLflow logging** - Enable/disable with a checkbox
-- **n8n credentials support for Databricks authentication** (host & token)
-- **Dynamic experiment management** (select existing or create new)
-- **No environment variables required** - all configuration via UI
-- Works as standalone AI Agent without MLflow
-- Streaming support
-- Fallback model support
-- Enhanced error messages
+### v0.2.0 (Current)
+- **Automatic experiment management** - One experiment per workflow
+- **Simplified configuration** - Single toggle to enable/disable tracking
+- **Team-friendly** - Experiments in `/Shared/` workspace folder
+- Full AI Agent capabilities with optional MLflow tracing
+- Production-ready code
+
+### v0.1.0
+- Initial release with manual experiment selection
 
 ---
 

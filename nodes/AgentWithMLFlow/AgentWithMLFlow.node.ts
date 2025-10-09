@@ -1,8 +1,6 @@
 import type {
 	IExecuteFunctions,
-	ILoadOptionsFunctions,
 	INodeExecutionData,
-	INodeListSearchResult,
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
@@ -110,90 +108,11 @@ export class AgentWithMLFlow implements INodeType {
 				},
 			},
 		{
-			displayName: 'Enable MLflow Logging',
+			displayName: 'Enable MLflow Tracking',
 			name: 'enableMLflow',
 			type: 'boolean',
 			default: false,
-			description: 'Whether to log agent execution traces to Databricks MLflow',
-		},
-		{
-			displayName: 'Experiment Selection',
-			name: 'experimentSelection',
-			type: 'options',
-			options: [
-				{
-					name: 'By ID',
-					value: 'id',
-				},
-				{
-					name: 'By Name',
-					value: 'name',
-				},
-			],
-			default: 'name',
-			description: 'How to select the MLflow experiment',
-			displayOptions: {
-				show: {
-					enableMLflow: [true],
-				},
-			},
-		},
-		{
-			displayName: 'Experiment ID',
-			name: 'experimentId',
-			type: 'string',
-			default: '',
-			placeholder: 'e.g. 1427538817675103',
-			description: 'MLflow experiment ID',
-			displayOptions: {
-				show: {
-					enableMLflow: [true],
-					experimentSelection: ['id'],
-				},
-			},
-		},
-		{
-			displayName: 'Experiment',
-			name: 'experimentName',
-			type: 'resourceLocator',
-			default: { mode: 'list', value: '' },
-			description: 'Select an existing experiment or enter a new name',
-			displayOptions: {
-				show: {
-					enableMLflow: [true],
-					experimentSelection: ['name'],
-				},
-			},
-			modes: [
-				{
-					displayName: 'From List',
-					name: 'list',
-					type: 'list',
-					typeOptions: {
-						searchListMethod: 'searchExperiments',
-						searchable: true,
-					},
-				},
-				{
-					displayName: 'Name',
-					name: 'name',
-					type: 'string',
-					placeholder: 'e.g. my-experiment or /Shared/my-experiment',
-				},
-			],
-		},
-		{
-			displayName: 'Create If Not Exists',
-			name: 'createIfNotExists',
-			type: 'boolean',
-			default: true,
-			description: 'Whether to create the experiment if it does not exist (only when using By Name)',
-			displayOptions: {
-				show: {
-					enableMLflow: [true],
-					experimentSelection: ['name'],
-				},
-			},
+			description: 'Whether to log agent execution traces to MLflow. Uses workflow ID as experiment name, creating it if needed.',
 		},
 			{
 				displayName: 'Enable Fallback Model',
@@ -234,44 +153,6 @@ export class AgentWithMLFlow implements INodeType {
 		],
 	};
 
-	methods = {
-		listSearch: {
-			async searchExperiments(
-				this: ILoadOptionsFunctions,
-			): Promise<INodeListSearchResult> {
-				const credentials = await this.getCredentials('databricks');
-				const databricksHost = (credentials.host as string).replace(/\/$/, '');
-				const results: INodeListSearchResult = { results: [] };
-
-				try {
-					const response = await this.helpers.httpRequest({
-						method: 'GET',
-						url: `${databricksHost}/api/2.0/mlflow/experiments/search`,
-						headers: {
-							Authorization: `Bearer ${credentials.token}`,
-						},
-						qs: {
-							max_results: 1000,
-						},
-					});
-
-					if (response.experiments && Array.isArray(response.experiments)) {
-						results.results = response.experiments.map((exp: any) => ({
-							name: exp.name,
-							value: exp.experiment_id,
-							url: `${databricksHost}/ml/experiments/${exp.experiment_id}`,
-						}));
-					}
-				} catch (error: unknown) {
-					// If error, return empty list - silently fail as this is for UI autocomplete
-					const errorMessage = error instanceof Error ? error.message : String(error);
-					this.logger.debug(`Failed to load MLflow experiments list: ${errorMessage}`);
-				}
-
-				return results;
-			},
-		},
-	};
 
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		return await toolsAgentExecute.call(this);

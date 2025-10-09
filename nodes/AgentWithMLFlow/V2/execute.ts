@@ -17,7 +17,6 @@ import type { IExecuteFunctions, INodeExecutionData, ISupplyDataFunctions } from
 import assert from 'node:assert';
 import { CallbackHandler } from '../V2/CallbackHandler';
 import * as mlflow from "mlflow-tracing";
-import { MlflowClient } from "mlflow-tracing";
 
 import { getPromptInputByType } from '../src/utils/helpers';
 
@@ -38,29 +37,10 @@ import {
 
 import { SYSTEM_MESSAGE } from '../src/utils/prompt';
 import { MLFLOW_CONSTANTS, ERROR_MESSAGES } from '../src/constants';
-import { httpRequestWithRetry, maskCredentials, maskTokensInText } from '../src/utils/retry';
+import { maskTokensInText } from '../src/utils/retry';
 import {
-    validateExperimentName,
     validateDatabricksHost,
-    sanitizeExperimentId,
-    validateApiResponse,
-    RateLimiter,
 } from '../src/utils/security';
-
-// Rate limiter for MLflow API calls (100 requests per minute per credential)
-const apiRateLimiters = new Map<string, RateLimiter>();
-
-/**
- * Get or create rate limiter for a credential
- * @param credentialKey - Unique key for the credential
- * @returns Rate limiter instance
- */
-function getRateLimiter(credentialKey: string): RateLimiter {
-    if (!apiRateLimiters.has(credentialKey)) {
-        apiRateLimiters.set(credentialKey, new RateLimiter(100, 60000)); // 100 req/min
-    }
-    return apiRateLimiters.get(credentialKey)!;
-}
 
 // MLflow will be initialized dynamically per execution based on credentials
 
@@ -265,13 +245,8 @@ async function processEventStream(
 export async function toolsAgentExecute(
     this: IExecuteFunctions | ISupplyDataFunctions,
 ): Promise<INodeExecutionData[][]> {
-    this.logger.debug('Executing Tools Agent V2');
-
     // Check if MLflow logging is enabled
     const enableMLflow = this.getNodeParameter('enableMLflow', 0, false) as boolean;
-
-    let experimentId: string | undefined;
-    let mlflowClient: MlflowClient | undefined;
 
     if (enableMLflow) {
         // Get Databricks credentials
@@ -344,227 +319,75 @@ export async function toolsAgentExecute(
             );
         }
 
-        this.logger.debug('Using Databricks credentials', maskCredentials({ host: databricksHost, token }));
+        const workflowId = this.getWorkflow().id;
+        const experimentName = `/Shared/n8n-workflows-${workflowId}`;
 
-        // Get rate limiter for this credential (using host as key)
-        const rateLimiter = getRateLimiter(databricksHost);
+        let experimentId: string | undefined;
 
-        // Initialize MLflow client
-        mlflowClient = new MlflowClient({
-            trackingUri: 'databricks',
-            host: databricksHost,
-            databricksToken: credentials.token as string,
-        });
+        try {
+            try {
+                const getResponse = await this.helpers.request({
+                    method: 'GET',
+                    url: `${databricksHost}/api/2.0/mlflow/experiments/get-by-name`,
+                    headers: {
+                        'Authorization': `Bearer ${credentials.token}`,
+                        'Content-Type': 'application/json',
+                    },
+                    qs: {
+                        experiment_name: experimentName,
+                    },
+                    json: true,
+                });
 
-        // Get or create experiment
-        const experimentSelection = this.getNodeParameter('experimentSelection', 0, 'name') as string;
-
-        if (experimentSelection === 'id') {
-            // Use experiment ID directly
-            const rawExperimentId = this.getNodeParameter('experimentId', 0, '') as string;
-
-            if (!rawExperimentId) {
-                throw new NodeOperationError(
-                    this.getNode(),
-                    'Please provide an experiment ID',
-                );
-            }
-
-            // Security: Sanitize experiment ID to prevent injection
-            const sanitizedId = sanitizeExperimentId(rawExperimentId.trim());
-            if (!sanitizedId) {
-                throw new NodeOperationError(
-                    this.getNode(),
-                    ERROR_MESSAGES.INVALID_EXPERIMENT_ID(rawExperimentId),
-                );
-            }
-
-            experimentId = sanitizedId;
-            this.logger.info(`Using MLflow experiment ID: ${experimentId}`);
-        } else {
-            // Use experiment name (from list or custom)
-            const experimentResource = this.getNodeParameter('experimentName', 0) as { mode: string; value: string } | string;
-            const createIfNotExists = this.getNodeParameter('createIfNotExists', 0, true) as boolean;
-
-            if (typeof experimentResource === 'object' && experimentResource.mode === 'list') {
-                // Selected from list - validate the ID
-                const selectedId = experimentResource.value;
-
-                if (!selectedId || typeof selectedId !== 'string') {
-                    throw new NodeOperationError(
-                        this.getNode(),
-                        ERROR_MESSAGES.INVALID_EXPERIMENT_SELECTION,
-                    );
+                if (getResponse && getResponse.experiment && getResponse.experiment.experiment_id) {
+                    experimentId = getResponse.experiment.experiment_id;
                 }
+            } catch (getError: unknown) {
+                const createResponse = await this.helpers.request({
+                    method: 'POST',
+                    url: `${databricksHost}/api/2.0/mlflow/experiments/create`,
+                    headers: {
+                        'Authorization': `Bearer ${credentials.token}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: {
+                        name: experimentName,
+                    },
+                    json: true,
+                });
 
-                // Security: Sanitize experiment ID from list
-                const sanitizedId = sanitizeExperimentId(selectedId.trim());
-                if (!sanitizedId) {
-                    throw new NodeOperationError(
-                        this.getNode(),
-                        ERROR_MESSAGES.INVALID_EXPERIMENT_ID_FROM_LIST(selectedId),
-                    );
-                }
-
-                experimentId = sanitizedId;
-                this.logger.info(`Using selected MLflow experiment ID: ${experimentId}`);
-            } else {
-                // Custom name entered - need to find or create
-                const experimentName = typeof experimentResource === 'object' ? experimentResource.value : experimentResource;
-
-                // Security: Validate experiment name for path traversal
-                const nameValidation = validateExperimentName(experimentName);
-                if (!nameValidation.isValid) {
-                    throw new NodeOperationError(
-                        this.getNode(),
-                        nameValidation.error!,
-                    );
-                }
-
-                const trimmedExperimentName = nameValidation.sanitized!;
-
-                try {
-                    // Get current user for path resolution
-                    let currentUser = '';
-                    try {
-                        // Rate limiting check
-                        if (!rateLimiter.isAllowed()) {
-                            throw new NodeOperationError(
-                                this.getNode(),
-                                `Rate limit exceeded for Databricks API. Please wait before retrying. (${rateLimiter.getRemaining()} requests remaining in current window)`
-                            );
-                        }
-
-                        const userResponse = await httpRequestWithRetry<{ userName: string }>(
-                            this,
-                            {
-                                method: 'GET',
-                                url: `${databricksHost}/api/2.0/preview/scim/v2/Me`,
-                                headers: {
-                                    Authorization: `Bearer ${credentials.token}`,
-                                },
-                                json: true,
-                                timeout: MLFLOW_CONSTANTS.API_REQUEST_TIMEOUT_MS,
-                            }
-                        );
-
-                        // Security: Validate API response structure
-                        const validation = validateApiResponse(userResponse, ['userName']);
-                        if (!validation.isValid) {
-                            throw new Error(`Invalid user API response: ${validation.error}`);
-                        }
-
-                        currentUser = userResponse.userName;
-                    } catch (userError: unknown) {
-                        const errorMessage = userError instanceof Error ? userError.message : String(userError);
-                        this.logger.warn(`Could not fetch current user: ${maskTokensInText(errorMessage)}. Using default path`);
-                    }
-
-                    // Build full experiment path
-                    let fullExperimentPath: string;
-                    if (trimmedExperimentName.startsWith('/')) {
-                        fullExperimentPath = trimmedExperimentName;
-                    } else if (currentUser) {
-                        fullExperimentPath = `/Users/${currentUser}/${trimmedExperimentName}`;
-                    } else {
-                        fullExperimentPath = `/Shared/${trimmedExperimentName}`;
-                    }
-
-                    // Try to get experiment by name first
-                    try {
-                        // Rate limiting check
-                        if (!rateLimiter.isAllowed()) {
-                            throw new NodeOperationError(
-                                this.getNode(),
-                                `Rate limit exceeded for Databricks API. Please wait before retrying. (${rateLimiter.getRemaining()} requests remaining in current window)`
-                            );
-                        }
-
-                        const searchResponse = await httpRequestWithRetry<{ experiment: { experiment_id: string } }>(
-                            this,
-                            {
-                                method: 'GET',
-                                url: `${databricksHost}/api/2.0/mlflow/experiments/get-by-name`,
-                                headers: {
-                                    Authorization: `Bearer ${credentials.token}`,
-                                },
-                                qs: {
-                                    experiment_name: fullExperimentPath,
-                                },
-                                json: true,
-                                timeout: MLFLOW_CONSTANTS.API_REQUEST_TIMEOUT_MS,
-                            }
-                        );
-
-                        // Security: Validate API response structure
-                        const validation = validateApiResponse(searchResponse, ['experiment']);
-                        if (!validation.isValid || !searchResponse.experiment.experiment_id) {
-                            throw new Error('Invalid experiment API response structure');
-                        }
-
-                        // Security: Sanitize experiment ID from API response
-                        const sanitizedId = sanitizeExperimentId(searchResponse.experiment.experiment_id);
-                        if (!sanitizedId) {
-                            throw new Error(`Invalid experiment ID received from API: ${searchResponse.experiment.experiment_id}`);
-                        }
-
-                        experimentId = sanitizedId;
-                        this.logger.info(`Using existing MLflow experiment: ${fullExperimentPath} (ID: ${experimentId})`);
-                    } catch (getError: unknown) {
-                        // Experiment doesn't exist
-                        if (createIfNotExists) {
-                            // Create new experiment
-                            this.logger.info(`Creating MLflow experiment: ${fullExperimentPath}`);
-                            experimentId = await mlflowClient.createExperiment(fullExperimentPath);
-                            this.logger.info(`Created new MLflow experiment: ${fullExperimentPath} (ID: ${experimentId})`);
-                        } else {
-                            throw new NodeOperationError(
-                                this.getNode(),
-                                `Experiment "${fullExperimentPath}" not found and "Create If Not Exists" is disabled`,
-                            );
-                        }
-                    }
-                } catch (error: unknown) {
-                    const errorMessage = error instanceof Error ? error.message : String(error);
-                    // Security: Mask any tokens that might appear in error messages
-                    this.logger.error(`Error with experiment: ${maskTokensInText(errorMessage)}`);
-                    throw new NodeOperationError(
-                        this.getNode(),
-                        `Failed to get or create MLflow experiment: ${maskTokensInText(errorMessage)}`
-                    );
+                if (createResponse && createResponse.experiment_id) {
+                    experimentId = createResponse.experiment_id;
+                } else {
+                    throw new Error('Failed to get experiment ID from create response');
                 }
             }
-        }
 
-        // Verify we have an experiment ID
-        if (!experimentId) {
+            if (!experimentId) {
+                throw new Error('Failed to get or create experiment ID');
+            }
+
+            mlflow.init({
+                trackingUri: 'databricks',
+                experimentId: experimentId,
+                host: databricksHost,
+                databricksToken: credentials.token as string,
+            });
+        } catch (error: unknown) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
             throw new NodeOperationError(
                 this.getNode(),
-                'Failed to get or create experiment ID',
+                `Failed to setup MLflow experiment: ${maskTokensInText(errorMessage)}`
             );
         }
-
-        // Initialize MLflow with experiment ID
-        mlflow.init({
-            trackingUri: process.env.MLFLOW_TRACKING_URI || "databricks",
-            experimentId: experimentId,
-        });
-
-        this.logger.info(`MLflow initialized with experiment ID: ${experimentId}`);
-    } else {
-        this.logger.info('MLflow logging is disabled');
     }
 
     const returnData: INodeExecutionData[] = [];
     const items = this.getInputData();
 
-    // Handle empty input
     if (!items || items.length === 0) {
-        this.logger.info('No input items to process, returning empty result');
         return [returnData];
     }
-
-    this.logger.debug(`Processing ${items.length} input item(s)`);
 
     // Validate and sanitize batch parameters
     const rawBatchSize = this.getNodeParameter('options.batching.batchSize', 0, 1) as number;
