@@ -208,7 +208,6 @@ export class CallbackHandler extends BaseCallbackHandler {
   async handleAgentEnd?(
     action: AgentFinish,
     runId: string,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     parentRunId?: string,
   ): Promise<void> {
     try {
@@ -223,7 +222,6 @@ export class CallbackHandler extends BaseCallbackHandler {
   async handleChainError(
     err: ErrorLike,
     runId: string,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     parentRunId?: string | undefined,
   ): Promise<void> {
     try {
@@ -330,7 +328,6 @@ export class CallbackHandler extends BaseCallbackHandler {
   async handleChainEnd(
     outputs: ChainValues,
     runId: string,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     parentRunId?: string | undefined,
   ): Promise<void> {
     try {
@@ -446,7 +443,6 @@ export class CallbackHandler extends BaseCallbackHandler {
   async handleRetrieverEnd(
     documents: Document<Record<string, any>>[],
     runId: string,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     parentRunId?: string | undefined,
   ): Promise<void> {
     try {
@@ -466,7 +462,6 @@ export class CallbackHandler extends BaseCallbackHandler {
   async handleRetrieverError(
     err: ErrorLike,
     runId: string,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     parentRunId?: string | undefined,
   ): Promise<void> {
     try {
@@ -486,7 +481,6 @@ export class CallbackHandler extends BaseCallbackHandler {
   async handleToolEnd(
     output: string,
     runId: string,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     parentRunId?: string | undefined,
   ): Promise<void> {
     try {
@@ -504,7 +498,6 @@ export class CallbackHandler extends BaseCallbackHandler {
   async handleToolError(
     err: ErrorLike,
     runId: string,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     parentRunId?: string | undefined,
   ): Promise<void> {
     try {
@@ -526,7 +519,6 @@ export class CallbackHandler extends BaseCallbackHandler {
   async handleLLMEnd(
     output: LLMResult,
     runId: string,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     parentRunId?: string | undefined,
   ): Promise<void> {
     try {
@@ -608,7 +600,6 @@ export class CallbackHandler extends BaseCallbackHandler {
   async handleLLMError(
     err: ErrorLike,
     runId: string,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     parentRunId?: string | undefined,
   ): Promise<void> {
     try {
