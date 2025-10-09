@@ -12,7 +12,7 @@
             "ES2022"
         ],
         "removeComments": true,
-        "useUnknownInCatchVariables": false,
+        "useUnknownInCatchVariables": true,
         "forceConsistentCasingInFileNames": true,
         "noImplicitAny": true,
         "noImplicitReturns": true,
@@ -42,6 +42,12 @@
         "nodes/**/*.json",
         "package.json",
         "src",
-        "src/V2",
+        "src/V2"
     ],
+    "exclude": [
+        "node_modules",
+        "**/__tests__/**",
+        "**/*.test.ts",
+        "**/*.spec.ts"
+    ]
 }

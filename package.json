@@ -9,8 +9,11 @@
     "openai"
   ],
   "license": "MIT",
-  "homepage": "https://github.com/rorubyy/n8n-nodes-ai-agent-langfuse#readme",
-  "author": "Ruby Lo <rorubyy@gmail.com>",
+  "homepage": "https://github.com/manfredcalvo/n8n-nodes-ai-agent-mlflow#readme",
+  "author": "manfredcalvo",
+  "contributors": [
+    "Lucas Rampim"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/manfredcalvo/n8n-nodes-ai-agent-mlflow.git"
@@ -25,6 +28,9 @@
     "format": "prettier nodes credentials --write",
     "lint": "eslint nodes credentials package.json",
     "lintfix": "eslint nodes credentials package.json --fix",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
     "prepublishOnly": "npm run build && npm run lint -c .eslintrc.prepublish.js nodes credentials package.json"
   },
   "files": [
@@ -36,21 +42,23 @@
       "dist/credentials/Databricks.credentials.js"
     ],
     "nodes": [
-      "dist/nodes/AgentWithLangfuse/AgentWithMLFlow.node.js"
+      "dist/nodes/AgentWithMLFlow/AgentWithMLFlow.node.js"
     ]
   },
   "dependencies": {
-    "@langchain/core": "^0.3.72",
-    "@langchain/openai": "^0.6.9",
-    "langchain": "^0.3.16",
-    "lodash": "^4.17.21",
-    "mlflow-tracing": "^0.1.0",
-    "openai": "^5.19.1",
-    "proxy-from-env": "^1.1.0",
-    "undici": "^7.15.0",
-    "log4js": "^6.9.1" 
+    "@langchain/core": "0.3.78",
+    "@langchain/openai": "0.6.14",
+    "langchain": "0.3.35",
+    "lodash": "4.17.21",
+    "log4js": "6.9.1",
+    "mlflow-tracing": "0.1.0",
+    "openai": "5.23.2",
+    "proxy-from-env": "1.1.0",
+    "undici": "7.16.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "@types/json-schema": "^7.0.15",
     "@types/lodash": "^4.17.20",
     "@types/proxy-from-env": "^1.0.4",
@@ -59,9 +67,11 @@
     "eslint-plugin-n8n-nodes-base": "^1.16.3",
     "gulp": "^5.0.1",
     "gulp-cli": "^3.1.0",
+    "jest": "^30.2.0",
     "n8n-node-dev": "^1.111.0",
     "n8n-nodes-base": "^1.17.0",
     "prettier": "^3.5.3",
+    "ts-jest": "^29.4.4",
     "typescript": "^5.8.3"
   },
   "peerDependencies": {
@@ -69,6 +79,6 @@
   },
   "type": "commonjs",
   "bugs": {
-    "url": "https://github.com/rorubyy/n8n-nodes-ai-agent-langfuse/issues"
+    "url": "https://github.com/manfredcalvo/n8n-nodes-ai-agent-mlflow/issues"
   }
 }

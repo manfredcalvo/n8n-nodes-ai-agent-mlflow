@@ -37,11 +37,62 @@ import {
 } from '../src/utils/common';
 
 import { SYSTEM_MESSAGE } from '../src/utils/prompt';
+import { MLFLOW_CONSTANTS, ERROR_MESSAGES } from '../src/constants';
+import { httpRequestWithRetry, maskCredentials, maskTokensInText } from '../src/utils/retry';
+import {
+    validateExperimentName,
+    validateDatabricksHost,
+    sanitizeExperimentId,
+    validateApiResponse,
+    RateLimiter,
+} from '../src/utils/security';
+
+// Rate limiter for MLflow API calls (100 requests per minute per credential)
+const apiRateLimiters = new Map<string, RateLimiter>();
+
+/**
+ * Get or create rate limiter for a credential
+ * @param credentialKey - Unique key for the credential
+ * @returns Rate limiter instance
+ */
+function getRateLimiter(credentialKey: string): RateLimiter {
+    if (!apiRateLimiters.has(credentialKey)) {
+        apiRateLimiters.set(credentialKey, new RateLimiter(100, 60000)); // 100 req/min
+    }
+    return apiRateLimiters.get(credentialKey)!;
+}
 
 // MLflow will be initialized dynamically per execution based on credentials
 
 /**
- * Creates an agent executor with the given configuration
+ * Creates an agent executor with the given configuration.
+ *
+ * This function sets up the LangChain agent with tools, prompt, memory, and optional fallback model.
+ * If MLflow logging is enabled, it registers the callback handler for tracing.
+ *
+ * @param model - The primary chat model to use for the agent
+ * @param tools - Array of tools available to the agent
+ * @param prompt - The chat prompt template
+ * @param options - Configuration options including max iterations and intermediate steps
+ * @param outputParser - Optional output parser for structured responses
+ * @param memory - Optional chat memory for conversation history
+ * @param fallbackModel - Optional fallback model if primary model fails
+ * @param mlflowHandler - Optional MLflow callback handler for tracing
+ * @returns Configured AgentExecutor instance
+ *
+ * @example
+ * ```typescript
+ * const executor = createAgentExecutor(
+ *   chatModel,
+ *   [searchTool, calculatorTool],
+ *   promptTemplate,
+ *   { maxIterations: 10, returnIntermediateSteps: true },
+ *   outputParser,
+ *   memory,
+ *   fallbackChatModel,
+ *   mlflowHandler
+ * );
+ * ```
  */
 function createAgentExecutor(
     model: BaseChatModel,
@@ -91,6 +142,30 @@ function createAgentExecutor(
 }
 
 
+/**
+ * Processes the event stream from the agent executor in streaming mode.
+ *
+ * This function handles streaming chat model tokens as they arrive, sending them to the
+ * n8n UI in real-time. It also captures intermediate steps (tool calls and results) when requested.
+ *
+ * @param ctx - The n8n execution context
+ * @param eventStream - The iterable stream of events from the agent
+ * @param itemIndex - Index of the current item being processed
+ * @param returnIntermediateSteps - Whether to capture and return intermediate agent steps
+ * @returns Promise resolving to the complete output and optional intermediate steps
+ *
+ * @example
+ * ```typescript
+ * const result = await processEventStream(
+ *   this,
+ *   agentEventStream,
+ *   0,
+ *   true  // return intermediate steps
+ * );
+ * console.log(result.output); // "The weather is sunny..."
+ * console.log(result.intermediateSteps); // [{ action: {...}, observation: "..." }]
+ * ```
+ */
 async function processEventStream(
     ctx: IExecuteFunctions,
     eventStream: IterableReadableStream<StreamEvent>,
@@ -129,7 +204,7 @@ async function processEventStream(
             case 'on_chat_model_end':
                 // Capture full LLM response with tool calls for intermediate steps
                 if (returnIntermediateSteps && event.data) {
-                    const chatModelData = event.data as any;
+                    const chatModelData = event.data as { output?: { tool_calls?: Array<{ id: string; name: string; args: unknown; type: string }>; content?: string } };
                     const output = chatModelData.output;
 
                     // Check if this LLM response contains tool calls
@@ -154,7 +229,7 @@ async function processEventStream(
             case 'on_tool_end':
                 // Capture tool execution results and match with action
                 if (returnIntermediateSteps && event.data && agentResult.intermediateSteps!.length > 0) {
-                    const toolData = event.data as any;
+                    const toolData = event.data as { output?: unknown };
                     // Find the matching intermediate step for this tool call
                     const matchingStep = agentResult.intermediateSteps!.find(
                         (step) => !step.observation && step.action.tool === event.name,
@@ -205,16 +280,74 @@ export async function toolsAgentExecute(
         if (!credentials) {
             throw new NodeOperationError(
                 this.getNode(),
-                'Databricks credentials are required when MLflow logging is enabled',
+                ERROR_MESSAGES.MISSING_CREDENTIALS,
             );
         }
 
-        // Remove trailing slash from host if present
-        const databricksHost = (credentials.host as string).replace(/\/$/, '');
+        // Validate credentials have required fields
+        if (!credentials.host || typeof credentials.host !== 'string' || credentials.host.trim() === '') {
+            throw new NodeOperationError(
+                this.getNode(),
+                ERROR_MESSAGES.EMPTY_HOST,
+            );
+        }
 
-        // Set environment variables for MLflow to use
-        process.env.DATABRICKS_HOST = databricksHost;
-        process.env.DATABRICKS_TOKEN = credentials.token as string;
+        if (!credentials.token || typeof credentials.token !== 'string' || credentials.token.trim() === '') {
+            throw new NodeOperationError(
+                this.getNode(),
+                ERROR_MESSAGES.EMPTY_TOKEN,
+            );
+        }
+
+        // Warn if token looks suspiciously short
+        const token = credentials.token as string;
+        if (token.length < MLFLOW_CONSTANTS.MIN_DATABRICKS_TOKEN_LENGTH) {
+            this.logger.warn(ERROR_MESSAGES.SHORT_TOKEN_WARNING(token.length));
+        }
+
+        // Validate and clean Databricks host URL with security checks
+        const rawHost = credentials.host as string;
+        let databricksHost: string;
+        try {
+            const cleanedHost = rawHost.trim().replace(/\/$/, '');
+
+            // Handle case where user didn't include protocol
+            const hostWithProtocol = cleanedHost.startsWith('http')
+                ? cleanedHost
+                : `https://${cleanedHost}`;
+
+            // Security validation: Check for SSRF and invalid hosts
+            const hostValidation = validateDatabricksHost(hostWithProtocol);
+            if (!hostValidation.isValid) {
+                throw new Error(hostValidation.error);
+            }
+
+            const url = new URL(hostWithProtocol);
+
+            // Warn if using HTTP instead of HTTPS
+            if (url.protocol === 'http:') {
+                this.logger.warn(ERROR_MESSAGES.HTTP_INSECURE_WARNING(url.href));
+            } else if (url.protocol !== 'https:') {
+                throw new Error(`Host must use HTTP or HTTPS protocol, got: ${url.protocol}`);
+            }
+
+            if (!url.hostname) {
+                throw new Error('Invalid host URL: missing hostname');
+            }
+
+            databricksHost = hostValidation.sanitized!;
+        } catch (validationError: unknown) {
+            const errorMsg = validationError instanceof Error ? validationError.message : 'Invalid URL format';
+            throw new NodeOperationError(
+                this.getNode(),
+                ERROR_MESSAGES.INVALID_HOST_URL(rawHost, errorMsg)
+            );
+        }
+
+        this.logger.debug('Using Databricks credentials', maskCredentials({ host: databricksHost, token }));
+
+        // Get rate limiter for this credential (using host as key)
+        const rateLimiter = getRateLimiter(databricksHost);
 
         // Initialize MLflow client
         mlflowClient = new MlflowClient({
@@ -228,73 +361,156 @@ export async function toolsAgentExecute(
 
         if (experimentSelection === 'id') {
             // Use experiment ID directly
-            experimentId = this.getNodeParameter('experimentId', 0, '') as string;
+            const rawExperimentId = this.getNodeParameter('experimentId', 0, '') as string;
 
-            if (!experimentId) {
+            if (!rawExperimentId) {
                 throw new NodeOperationError(
                     this.getNode(),
                     'Please provide an experiment ID',
                 );
             }
 
+            // Security: Sanitize experiment ID to prevent injection
+            const sanitizedId = sanitizeExperimentId(rawExperimentId.trim());
+            if (!sanitizedId) {
+                throw new NodeOperationError(
+                    this.getNode(),
+                    ERROR_MESSAGES.INVALID_EXPERIMENT_ID(rawExperimentId),
+                );
+            }
+
+            experimentId = sanitizedId;
             this.logger.info(`Using MLflow experiment ID: ${experimentId}`);
         } else {
             // Use experiment name (from list or custom)
-            const experimentResource = this.getNodeParameter('experimentName', 0) as any;
+            const experimentResource = this.getNodeParameter('experimentName', 0) as { mode: string; value: string } | string;
             const createIfNotExists = this.getNodeParameter('createIfNotExists', 0, true) as boolean;
 
-            if (experimentResource.mode === 'list') {
-                // Selected from list - use the ID directly
-                experimentId = experimentResource.value;
+            if (typeof experimentResource === 'object' && experimentResource.mode === 'list') {
+                // Selected from list - validate the ID
+                const selectedId = experimentResource.value;
+
+                if (!selectedId || typeof selectedId !== 'string') {
+                    throw new NodeOperationError(
+                        this.getNode(),
+                        ERROR_MESSAGES.INVALID_EXPERIMENT_SELECTION,
+                    );
+                }
+
+                // Security: Sanitize experiment ID from list
+                const sanitizedId = sanitizeExperimentId(selectedId.trim());
+                if (!sanitizedId) {
+                    throw new NodeOperationError(
+                        this.getNode(),
+                        ERROR_MESSAGES.INVALID_EXPERIMENT_ID_FROM_LIST(selectedId),
+                    );
+                }
+
+                experimentId = sanitizedId;
                 this.logger.info(`Using selected MLflow experiment ID: ${experimentId}`);
             } else {
                 // Custom name entered - need to find or create
-                const experimentName = experimentResource.value || experimentResource;
+                const experimentName = typeof experimentResource === 'object' ? experimentResource.value : experimentResource;
+
+                // Security: Validate experiment name for path traversal
+                const nameValidation = validateExperimentName(experimentName);
+                if (!nameValidation.isValid) {
+                    throw new NodeOperationError(
+                        this.getNode(),
+                        nameValidation.error!,
+                    );
+                }
+
+                const trimmedExperimentName = nameValidation.sanitized!;
 
                 try {
                     // Get current user for path resolution
                     let currentUser = '';
                     try {
-                        const userResponse = await this.helpers.httpRequest({
-                            method: 'GET',
-                            url: `${databricksHost}/api/2.0/preview/scim/v2/Me`,
-                            headers: {
-                                Authorization: `Bearer ${credentials.token}`,
-                            },
-                            json: true,
-                        });
+                        // Rate limiting check
+                        if (!rateLimiter.isAllowed()) {
+                            throw new NodeOperationError(
+                                this.getNode(),
+                                `Rate limit exceeded for Databricks API. Please wait before retrying. (${rateLimiter.getRemaining()} requests remaining in current window)`
+                            );
+                        }
+
+                        const userResponse = await httpRequestWithRetry<{ userName: string }>(
+                            this,
+                            {
+                                method: 'GET',
+                                url: `${databricksHost}/api/2.0/preview/scim/v2/Me`,
+                                headers: {
+                                    Authorization: `Bearer ${credentials.token}`,
+                                },
+                                json: true,
+                                timeout: MLFLOW_CONSTANTS.API_REQUEST_TIMEOUT_MS,
+                            }
+                        );
+
+                        // Security: Validate API response structure
+                        const validation = validateApiResponse(userResponse, ['userName']);
+                        if (!validation.isValid) {
+                            throw new Error(`Invalid user API response: ${validation.error}`);
+                        }
+
                         currentUser = userResponse.userName;
-                    } catch (userError) {
-                        this.logger.warn('Could not fetch current user, using default path');
+                    } catch (userError: unknown) {
+                        const errorMessage = userError instanceof Error ? userError.message : String(userError);
+                        this.logger.warn(`Could not fetch current user: ${maskTokensInText(errorMessage)}. Using default path`);
                     }
 
                     // Build full experiment path
                     let fullExperimentPath: string;
-                    if (experimentName.startsWith('/')) {
-                        fullExperimentPath = experimentName;
+                    if (trimmedExperimentName.startsWith('/')) {
+                        fullExperimentPath = trimmedExperimentName;
                     } else if (currentUser) {
-                        fullExperimentPath = `/Users/${currentUser}/${experimentName}`;
+                        fullExperimentPath = `/Users/${currentUser}/${trimmedExperimentName}`;
                     } else {
-                        fullExperimentPath = `/Shared/${experimentName}`;
+                        fullExperimentPath = `/Shared/${trimmedExperimentName}`;
                     }
 
                     // Try to get experiment by name first
                     try {
-                        const searchResponse = await this.helpers.httpRequest({
-                            method: 'GET',
-                            url: `${databricksHost}/api/2.0/mlflow/experiments/get-by-name`,
-                            headers: {
-                                Authorization: `Bearer ${credentials.token}`,
-                            },
-                            qs: {
-                                experiment_name: fullExperimentPath,
-                            },
-                            json: true,
-                        });
+                        // Rate limiting check
+                        if (!rateLimiter.isAllowed()) {
+                            throw new NodeOperationError(
+                                this.getNode(),
+                                `Rate limit exceeded for Databricks API. Please wait before retrying. (${rateLimiter.getRemaining()} requests remaining in current window)`
+                            );
+                        }
 
-                        experimentId = searchResponse.experiment.experiment_id;
+                        const searchResponse = await httpRequestWithRetry<{ experiment: { experiment_id: string } }>(
+                            this,
+                            {
+                                method: 'GET',
+                                url: `${databricksHost}/api/2.0/mlflow/experiments/get-by-name`,
+                                headers: {
+                                    Authorization: `Bearer ${credentials.token}`,
+                                },
+                                qs: {
+                                    experiment_name: fullExperimentPath,
+                                },
+                                json: true,
+                                timeout: MLFLOW_CONSTANTS.API_REQUEST_TIMEOUT_MS,
+                            }
+                        );
+
+                        // Security: Validate API response structure
+                        const validation = validateApiResponse(searchResponse, ['experiment']);
+                        if (!validation.isValid || !searchResponse.experiment.experiment_id) {
+                            throw new Error('Invalid experiment API response structure');
+                        }
+
+                        // Security: Sanitize experiment ID from API response
+                        const sanitizedId = sanitizeExperimentId(searchResponse.experiment.experiment_id);
+                        if (!sanitizedId) {
+                            throw new Error(`Invalid experiment ID received from API: ${searchResponse.experiment.experiment_id}`);
+                        }
+
+                        experimentId = sanitizedId;
                         this.logger.info(`Using existing MLflow experiment: ${fullExperimentPath} (ID: ${experimentId})`);
-                    } catch (getError: any) {
+                    } catch (getError: unknown) {
                         // Experiment doesn't exist
                         if (createIfNotExists) {
                             // Create new experiment
@@ -308,11 +524,13 @@ export async function toolsAgentExecute(
                             );
                         }
                     }
-                } catch (error: any) {
-                    this.logger.error(`Error with experiment: ${JSON.stringify(error, null, 2)}`);
+                } catch (error: unknown) {
+                    const errorMessage = error instanceof Error ? error.message : String(error);
+                    // Security: Mask any tokens that might appear in error messages
+                    this.logger.error(`Error with experiment: ${maskTokensInText(errorMessage)}`);
                     throw new NodeOperationError(
                         this.getNode(),
-                        `Failed to get or create MLflow experiment: ${error.message}`,
+                        `Failed to get or create MLflow experiment: ${maskTokensInText(errorMessage)}`
                     );
                 }
             }
@@ -339,29 +557,86 @@ export async function toolsAgentExecute(
 
     const returnData: INodeExecutionData[] = [];
     const items = this.getInputData();
-    const batchSize = this.getNodeParameter('options.batching.batchSize', 0, 1) as number;
-    const delayBetweenBatches = this.getNodeParameter(
+
+    // Handle empty input
+    if (!items || items.length === 0) {
+        this.logger.info('No input items to process, returning empty result');
+        return [returnData];
+    }
+
+    this.logger.debug(`Processing ${items.length} input item(s)`);
+
+    // Validate and sanitize batch parameters
+    const rawBatchSize = this.getNodeParameter('options.batching.batchSize', 0, 1) as number;
+
+    // Comprehensive batch size validation
+    let batchSize: number;
+    if (!Number.isFinite(rawBatchSize) || rawBatchSize < 1) {
+        this.logger.warn(`Invalid batch size ${rawBatchSize}, using default: 1`);
+        batchSize = 1;
+    } else if (rawBatchSize > items.length) {
+        this.logger.warn(`Batch size ${rawBatchSize} exceeds items count ${items.length}, using ${items.length}`);
+        batchSize = items.length;
+    } else {
+        batchSize = Math.floor(rawBatchSize);
+        if (batchSize !== rawBatchSize) {
+            this.logger.warn(`Non-integer batch size ${rawBatchSize}, rounded to ${batchSize}`);
+        }
+    }
+
+    // Validate delay with upper bound
+    const rawDelayBetweenBatches = this.getNodeParameter(
         'options.batching.delayBetweenBatches',
         0,
         0,
     ) as number;
+
+    let delayBetweenBatches: number;
+    if (!Number.isFinite(rawDelayBetweenBatches) || rawDelayBetweenBatches < 0) {
+        this.logger.warn(`Invalid delay ${rawDelayBetweenBatches}, using 0`);
+        delayBetweenBatches = 0;
+    } else if (rawDelayBetweenBatches > MLFLOW_CONSTANTS.MAX_DELAY_BETWEEN_BATCHES_MS) {
+        this.logger.warn(`Delay ${rawDelayBetweenBatches}ms exceeds maximum ${MLFLOW_CONSTANTS.MAX_DELAY_BETWEEN_BATCHES_MS}ms, capping to maximum`);
+        delayBetweenBatches = MLFLOW_CONSTANTS.MAX_DELAY_BETWEEN_BATCHES_MS;
+    } else {
+        delayBetweenBatches = Math.floor(rawDelayBetweenBatches);
+        if (delayBetweenBatches !== rawDelayBetweenBatches) {
+            this.logger.warn(`Non-integer delay ${rawDelayBetweenBatches}, rounded to ${delayBetweenBatches}`);
+        }
+    }
     const needsFallback = this.getNodeParameter('needsFallback', 0, false) as boolean;
     const memory = await getOptionalMemory(this);
     const model = await getChatModel(this, 0);
-    assert(model, 'Please connect a model to the Chat Model input');
+    assert(model, ERROR_MESSAGES.MODEL_NOT_CONNECTED);
     const fallbackModel = needsFallback ? await getChatModel(this, 1) : null;
 
     if (needsFallback && !fallbackModel) {
         throw new NodeOperationError(
             this.getNode(),
-            'Please connect a model to the Fallback Model input or disable the fallback option',
+            ERROR_MESSAGES.FALLBACK_MODEL_NOT_CONNECTED,
         );
     }
 
     // Check if streaming is enabled
     const enableStreaming = this.getNodeParameter('options.enableStreaming', 0, true) as boolean;
 
-    for (let i = 0; i < items.length; i += batchSize) {
+    // Track all handlers for cleanup
+    const mlflowHandlers: CallbackHandler[] = [];
+
+    try {
+        for (let i = 0; i < items.length; i += batchSize) {
+        // Check for cancellation before processing each batch
+        const cancelSignal = this.getExecutionCancelSignal();
+        if (cancelSignal?.aborted) {
+            const currentBatch = Math.floor(i / batchSize) + 1;
+            const totalBatches = Math.ceil(items.length / batchSize);
+            this.logger.info(`Execution cancelled at batch ${currentBatch}`);
+            throw new NodeOperationError(
+                this.getNode(),
+                ERROR_MESSAGES.EXECUTION_CANCELLED(currentBatch, totalBatches)
+            );
+        }
+
         const batch = items.slice(i, i + batchSize);
         const batchPromises = batch.map(async (_item, batchItemIndex) => {
             const itemIndex = i + batchItemIndex;
@@ -385,6 +660,11 @@ export async function toolsAgentExecute(
             };
             // Define mlflow callback handler for tracing (only if MLflow is enabled)
             const mlflowHandler = enableMLflow ? new CallbackHandler({}) : undefined;
+
+            // Track handler for cleanup
+            if (mlflowHandler) {
+                mlflowHandlers.push(mlflowHandler);
+            }
 
             // Prepare the prompt messages and prompt template.
             const messages = await prepareMessages(this, itemIndex, {
@@ -462,19 +742,7 @@ export async function toolsAgentExecute(
                     );
                 }
             } else {
-                
-                
-                // // Trace any function with a decorator
-                // const tracedInvoke = mlflow.trace(executor.invoke,
-                //     {
-                //     name: "agent_with_tools",
-                //     spanType: mlflow.SpanType.CHAIN,
-                //     },
-                // );
-
-                // // Handle regular execution
-                // return await tracedInvoke(invokeParams, executeOptions)
-
+                // Handle regular execution without streaming
                 return await executor.invoke(invokeParams, executeOptions)
             }
         });
@@ -487,15 +755,19 @@ export async function toolsAgentExecute(
             const itemIndex = i + index;
             if (result.status === 'rejected') {
                 const error = result.reason as Error;
+                // Security: Mask tokens in error messages
+                const maskedMessage = maskTokensInText(error.message);
+                const maskedStack = error.stack ? maskTokensInText(error.stack) : undefined;
+
                 if (this.continueOnFail()) {
                     returnData.push({
-                        json: { error: error.message, stack: error.stack },
+                        json: { error: maskedMessage, stack: maskedStack },
                         pairedItem: { item: itemIndex },
                     });
                     return;
                 } else {
                     // Add more context to the error
-                    const enhancedError = new Error(`Agent execution failed: ${error.message}\n\nOriginal stack:\n${error.stack}`);
+                    const enhancedError = new Error(`Agent execution failed: ${maskedMessage}\n\nOriginal stack:\n${maskedStack || 'N/A'}`);
                     throw new NodeOperationError(this.getNode(), enhancedError);
                 }
             }
@@ -527,7 +799,23 @@ export async function toolsAgentExecute(
         if (i + batchSize < items.length && delayBetweenBatches > 0) {
             await sleep(delayBetweenBatches);
         }
-    }
+        }
 
-    return [returnData];
+        return [returnData];
+    } finally {
+        // Wait for all pending operations to complete before cleanup
+        await Promise.allSettled(
+            mlflowHandlers.map(async (handler) => {
+                try {
+                    // Give some time for any pending span operations to complete
+                    await new Promise(resolve => setTimeout(resolve, MLFLOW_CONSTANTS.SPAN_CLEANUP_DELAY_MS));
+                    handler.cleanup();
+                } catch (cleanupError: unknown) {
+                    const errorMsg = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+                    // Security: Mask any tokens in cleanup errors
+                    this.logger.debug(`Error cleaning up MLflow handler: ${maskTokensInText(errorMsg)}`);
+                }
+            })
+        );
+    }
 }

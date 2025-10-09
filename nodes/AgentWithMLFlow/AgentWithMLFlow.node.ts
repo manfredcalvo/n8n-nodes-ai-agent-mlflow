@@ -8,7 +8,6 @@ import type {
 } from 'n8n-workflow';
 
 import { promptTypeOptions, textFromPreviousNode, textInput } from './src/utils/descriptions';
-// import { getInputs } from './utils';
 import { getToolsAgentProperties } from './V2/description';
 import { toolsAgentExecute } from './V2/execute';
 import { getInputs } from './V2/utils';
@@ -263,9 +262,10 @@ export class AgentWithMLFlow implements INodeType {
 							url: `${databricksHost}/ml/experiments/${exp.experiment_id}`,
 						}));
 					}
-				} catch (error) {
-					// If error, return empty list
-					console.error('Error fetching experiments:', error);
+				} catch (error: unknown) {
+					// If error, return empty list - silently fail as this is for UI autocomplete
+					const errorMessage = error instanceof Error ? error.message : String(error);
+					this.logger.debug(`Failed to load MLflow experiments list: ${errorMessage}`);
 				}
 
 				return results;
