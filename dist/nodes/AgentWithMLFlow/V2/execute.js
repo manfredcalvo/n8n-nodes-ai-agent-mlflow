@@ -164,77 +164,79 @@ async function toolsAgentExecute() {
             host: databricksHost,
             databricksToken: credentials.token,
         });
-        const experimentMode = this.getNodeParameter('experimentMode', 0);
-        if (experimentMode === 'create') {
-            const experimentName = this.getNodeParameter('experimentName', 0);
-            try {
-                let currentUser = '';
-                try {
-                    const userResponse = await this.helpers.httpRequest({
-                        method: 'GET',
-                        url: `${databricksHost}/api/2.0/preview/scim/v2/Me`,
-                        headers: {
-                            Authorization: `Bearer ${credentials.token}`,
-                        },
-                        json: true,
-                    });
-                    currentUser = userResponse.userName;
-                }
-                catch (userError) {
-                    this.logger.warn('Could not fetch current user, using default path');
-                }
-                let fullExperimentPath;
-                if (experimentName.startsWith('/')) {
-                    fullExperimentPath = experimentName;
-                }
-                else if (currentUser) {
-                    fullExperimentPath = `/Users/${currentUser}/${experimentName}`;
-                }
-                else {
-                    fullExperimentPath = `/Shared/${experimentName}`;
-                }
-                this.logger.info(`Attempting to create MLflow experiment: ${fullExperimentPath}`);
-                try {
-                    experimentId = await mlflowClient.createExperiment(fullExperimentPath);
-                    this.logger.info(`Created new MLflow experiment: ${fullExperimentPath} (ID: ${experimentId})`);
-                }
-                catch (createError) {
-                    if (createError.message?.includes('RESOURCE_ALREADY_EXISTS') ||
-                        createError.message?.includes('already exists')) {
-                        this.logger.info(`Experiment ${fullExperimentPath} already exists, fetching its ID...`);
-                        try {
-                            const searchResponse = await this.helpers.httpRequest({
-                                method: 'GET',
-                                url: `${databricksHost}/api/2.0/mlflow/experiments/get-by-name`,
-                                headers: {
-                                    Authorization: `Bearer ${credentials.token}`,
-                                },
-                                qs: {
-                                    experiment_name: fullExperimentPath,
-                                },
-                                json: true,
-                            });
-                            experimentId = searchResponse.experiment.experiment_id;
-                            this.logger.info(`Using existing MLflow experiment: ${fullExperimentPath} (ID: ${experimentId})`);
-                        }
-                        catch (getError) {
-                            throw new Error(`Experiment exists but could not retrieve ID: ${getError.message}`);
-                        }
-                    }
-                    else {
-                        throw createError;
-                    }
-                }
-            }
-            catch (error) {
-                this.logger.error(`Error creating/getting experiment: ${JSON.stringify(error, null, 2)}`);
-                throw new n8n_workflow_1.NodeOperationError(this.getNode(), `Failed to create or get MLflow experiment: ${error.message}`);
-            }
-        }
-        else {
+        const experimentSelection = this.getNodeParameter('experimentSelection', 0, 'name');
+        if (experimentSelection === 'id') {
             experimentId = this.getNodeParameter('experimentId', 0, '');
             if (!experimentId) {
                 throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Please provide an experiment ID');
+            }
+            this.logger.info(`Using MLflow experiment ID: ${experimentId}`);
+        }
+        else {
+            const experimentResource = this.getNodeParameter('experimentName', 0);
+            const createIfNotExists = this.getNodeParameter('createIfNotExists', 0, true);
+            if (experimentResource.mode === 'list') {
+                experimentId = experimentResource.value;
+                this.logger.info(`Using selected MLflow experiment ID: ${experimentId}`);
+            }
+            else {
+                const experimentName = experimentResource.value || experimentResource;
+                try {
+                    let currentUser = '';
+                    try {
+                        const userResponse = await this.helpers.httpRequest({
+                            method: 'GET',
+                            url: `${databricksHost}/api/2.0/preview/scim/v2/Me`,
+                            headers: {
+                                Authorization: `Bearer ${credentials.token}`,
+                            },
+                            json: true,
+                        });
+                        currentUser = userResponse.userName;
+                    }
+                    catch (userError) {
+                        this.logger.warn('Could not fetch current user, using default path');
+                    }
+                    let fullExperimentPath;
+                    if (experimentName.startsWith('/')) {
+                        fullExperimentPath = experimentName;
+                    }
+                    else if (currentUser) {
+                        fullExperimentPath = `/Users/${currentUser}/${experimentName}`;
+                    }
+                    else {
+                        fullExperimentPath = `/Shared/${experimentName}`;
+                    }
+                    try {
+                        const searchResponse = await this.helpers.httpRequest({
+                            method: 'GET',
+                            url: `${databricksHost}/api/2.0/mlflow/experiments/get-by-name`,
+                            headers: {
+                                Authorization: `Bearer ${credentials.token}`,
+                            },
+                            qs: {
+                                experiment_name: fullExperimentPath,
+                            },
+                            json: true,
+                        });
+                        experimentId = searchResponse.experiment.experiment_id;
+                        this.logger.info(`Using existing MLflow experiment: ${fullExperimentPath} (ID: ${experimentId})`);
+                    }
+                    catch (getError) {
+                        if (createIfNotExists) {
+                            this.logger.info(`Creating MLflow experiment: ${fullExperimentPath}`);
+                            experimentId = await mlflowClient.createExperiment(fullExperimentPath);
+                            this.logger.info(`Created new MLflow experiment: ${fullExperimentPath} (ID: ${experimentId})`);
+                        }
+                        else {
+                            throw new n8n_workflow_1.NodeOperationError(this.getNode(), `Experiment "${fullExperimentPath}" not found and "Create If Not Exists" is disabled`);
+                        }
+                    }
+                }
+                catch (error) {
+                    this.logger.error(`Error with experiment: ${JSON.stringify(error, null, 2)}`);
+                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), `Failed to get or create MLflow experiment: ${error.message}`);
+                }
             }
         }
         if (!experimentId) {

@@ -108,21 +108,21 @@ class AgentWithMLFlow {
                 description: 'Whether to log agent execution traces to Databricks MLflow',
             },
             {
-                displayName: 'MLflow Experiment',
-                name: 'experimentMode',
+                displayName: 'Experiment Selection',
+                name: 'experimentSelection',
                 type: 'options',
                 options: [
                     {
-                        name: 'Select Existing',
-                        value: 'select',
+                        name: 'By ID',
+                        value: 'id',
                     },
                     {
-                        name: 'Create or Use Existing',
-                        value: 'create',
+                        name: 'By Name',
+                        value: 'name',
                     },
                 ],
-                default: 'select',
-                description: 'Whether to select an existing experiment or create a new one (will reuse if already exists)',
+                default: 'name',
+                description: 'How to select the MLflow experiment',
                 displayOptions: {
                     show: {
                         enableMLflow: [true],
@@ -139,21 +139,50 @@ class AgentWithMLFlow {
                 displayOptions: {
                     show: {
                         enableMLflow: [true],
-                        experimentMode: ['select'],
+                        experimentSelection: ['id'],
                     },
                 },
             },
             {
-                displayName: 'Experiment Name',
+                displayName: 'Experiment',
                 name: 'experimentName',
-                type: 'string',
-                default: '',
-                placeholder: 'e.g. my-ai-agent-experiment',
-                description: 'Name for the new MLflow experiment. Can be a simple name (will be created under /Users/<your-user>/) or an absolute path starting with / (e.g., /Shared/my-experiment)',
+                type: 'resourceLocator',
+                default: { mode: 'list', value: '' },
+                description: 'Select an existing experiment or enter a new name',
                 displayOptions: {
                     show: {
                         enableMLflow: [true],
-                        experimentMode: ['create'],
+                        experimentSelection: ['name'],
+                    },
+                },
+                modes: [
+                    {
+                        displayName: 'From List',
+                        name: 'list',
+                        type: 'list',
+                        typeOptions: {
+                            searchListMethod: 'searchExperiments',
+                            searchable: true,
+                        },
+                    },
+                    {
+                        displayName: 'Name',
+                        name: 'name',
+                        type: 'string',
+                        placeholder: 'e.g. my-experiment or /Shared/my-experiment',
+                    },
+                ],
+            },
+            {
+                displayName: 'Create If Not Exists',
+                name: 'createIfNotExists',
+                type: 'boolean',
+                default: true,
+                description: 'Whether to create the experiment if it does not exist (only when using By Name)',
+                displayOptions: {
+                    show: {
+                        enableMLflow: [true],
+                        experimentSelection: ['name'],
                     },
                 },
             },

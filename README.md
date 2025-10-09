@@ -151,10 +151,19 @@ This node uses **n8n credentials** for Databricks authentication. No environment
 
 ### MLflow Experiment Configuration (When MLflow is enabled)
 
-When MLflow logging is enabled, you can:
+When MLflow logging is enabled, you can select experiments in two ways:
 
-1. **Select Existing Experiment** - Enter an existing experiment ID
-2. **Create New Experiment** - Provide a name and the node will create it automatically
+#### By ID
+Simply enter the numeric experiment ID (e.g., `1427538817675103`)
+
+#### By Name
+Choose from two options:
+- **From List** - Select from your existing experiments in a searchable dropdown
+- **Name** - Enter a custom experiment name (e.g., `my-experiment` or `/Shared/team-experiment`)
+  - If the experiment exists, it will be used automatically
+  - If it doesn't exist and **"Create If Not Exists"** is enabled (default), it will be created
+  - Simple names are created under `/Users/<your-user>/`
+  - Absolute paths starting with `/` are used as-is
 
 ### Getting Databricks Information
 
