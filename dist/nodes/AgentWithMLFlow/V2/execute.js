@@ -44,6 +44,7 @@ const n8n_workflow_1 = require("n8n-workflow");
 const node_assert_1 = __importDefault(require("node:assert"));
 const CallbackHandler_1 = require("../V2/CallbackHandler");
 const mlflow = __importStar(require("mlflow-tracing"));
+const mlflow_tracing_1 = require("mlflow-tracing");
 const helpers_1 = require("../src/utils/helpers");
 const N8nOutputParser_1 = require("../src/utils/N8nOutputParser");
 const common_1 = require("../src/utils/common");
@@ -147,126 +148,107 @@ async function processEventStream(ctx, eventStream, itemIndex, returnIntermediat
 }
 async function toolsAgentExecute() {
     this.logger.debug('Executing Tools Agent V2');
-    const credentials = await this.getCredentials('databricks');
-    const databricksHost = credentials.host.replace(/\/$/, '');
-    process.env.DATABRICKS_HOST = databricksHost;
-    process.env.DATABRICKS_TOKEN = credentials.token;
-    const experimentMode = this.getNodeParameter('experimentMode', 0);
+    const enableMLflow = this.getNodeParameter('enableMLflow', 0, false);
     let experimentId;
-    if (experimentMode === 'create') {
-        const experimentName = this.getNodeParameter('experimentName', 0);
-        try {
-            let currentUser = '';
+    let mlflowClient;
+    if (enableMLflow) {
+        const credentials = await this.getCredentials('databricks');
+        if (!credentials) {
+            throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Databricks credentials are required when MLflow logging is enabled');
+        }
+        const databricksHost = credentials.host.replace(/\/$/, '');
+        process.env.DATABRICKS_HOST = databricksHost;
+        process.env.DATABRICKS_TOKEN = credentials.token;
+        mlflowClient = new mlflow_tracing_1.MlflowClient({
+            trackingUri: 'databricks',
+            host: databricksHost,
+            databricksToken: credentials.token,
+        });
+        const experimentMode = this.getNodeParameter('experimentMode', 0);
+        if (experimentMode === 'create') {
+            const experimentName = this.getNodeParameter('experimentName', 0);
             try {
-                const userResponse = await this.helpers.httpRequest({
-                    method: 'GET',
-                    url: `${databricksHost}/api/2.0/preview/scim/v2/Me`,
-                    headers: {
-                        Authorization: `Bearer ${credentials.token}`,
-                    },
-                    json: true,
-                });
-                currentUser = userResponse.userName;
-            }
-            catch (userError) {
-                this.logger.warn('Could not fetch current user, using default path');
-            }
-            let fullExperimentPath;
-            if (experimentName.startsWith('/')) {
-                fullExperimentPath = experimentName;
-            }
-            else if (currentUser) {
-                fullExperimentPath = `/Users/${currentUser}/${experimentName}`;
-            }
-            else {
-                fullExperimentPath = `/Shared/${experimentName}`;
-            }
-            this.logger.info(`Attempting to create MLflow experiment: ${fullExperimentPath}`);
-            const response = await this.helpers.httpRequest({
-                method: 'POST',
-                url: `${databricksHost}/api/2.0/mlflow/experiments/create`,
-                headers: {
-                    Authorization: `Bearer ${credentials.token}`,
-                    'Content-Type': 'application/json',
-                },
-                body: {
-                    name: fullExperimentPath,
-                },
-                json: true,
-                returnFullResponse: true,
-                ignoreHttpStatusErrors: true,
-            });
-            if (response.statusCode && response.statusCode >= 400) {
-                const errorBody = response.body;
-                if (errorBody.error_code === 'RESOURCE_ALREADY_EXISTS') {
-                    this.logger.info(`Experiment ${fullExperimentPath} already exists, fetching its ID...`);
-                    try {
-                        const searchResponse = await this.helpers.httpRequest({
-                            method: 'GET',
-                            url: `${databricksHost}/api/2.0/mlflow/experiments/get-by-name`,
-                            headers: {
-                                Authorization: `Bearer ${credentials.token}`,
-                            },
-                            qs: {
-                                experiment_name: fullExperimentPath,
-                            },
-                            json: true,
-                        });
-                        experimentId = searchResponse.experiment.experiment_id;
-                        this.logger.info(`Using existing MLflow experiment: ${fullExperimentPath} (ID: ${experimentId})`);
-                    }
-                    catch (getError) {
-                        throw new Error(`Experiment exists but could not retrieve ID: ${getError.message}`);
-                    }
+                let currentUser = '';
+                try {
+                    const userResponse = await this.helpers.httpRequest({
+                        method: 'GET',
+                        url: `${databricksHost}/api/2.0/preview/scim/v2/Me`,
+                        headers: {
+                            Authorization: `Bearer ${credentials.token}`,
+                        },
+                        json: true,
+                    });
+                    currentUser = userResponse.userName;
+                }
+                catch (userError) {
+                    this.logger.warn('Could not fetch current user, using default path');
+                }
+                let fullExperimentPath;
+                if (experimentName.startsWith('/')) {
+                    fullExperimentPath = experimentName;
+                }
+                else if (currentUser) {
+                    fullExperimentPath = `/Users/${currentUser}/${experimentName}`;
                 }
                 else {
-                    this.logger.error(`Databricks API error response: ${JSON.stringify(errorBody)}`);
-                    throw new Error(`Databricks returned ${response.statusCode}: ${errorBody.message || JSON.stringify(errorBody)}`);
+                    fullExperimentPath = `/Shared/${experimentName}`;
                 }
-            }
-            else {
-                experimentId = response.body.experiment_id;
-                this.logger.info(`Created new MLflow experiment: ${fullExperimentPath} (ID: ${experimentId})`);
-            }
-        }
-        catch (error) {
-            let errorMessage = error.message;
-            let errorDetails = '';
-            this.logger.error(`Error creating experiment: ${JSON.stringify(error, null, 2)}`);
-            if (error.cause) {
-                errorDetails += `\nCause: ${JSON.stringify(error.cause)}`;
-            }
-            if (error.response?.body) {
+                this.logger.info(`Attempting to create MLflow experiment: ${fullExperimentPath}`);
                 try {
-                    const errorBody = typeof error.response.body === 'string'
-                        ? JSON.parse(error.response.body)
-                        : error.response.body;
-                    errorMessage = errorBody.message || errorBody.error_code || error.message;
-                    errorDetails += `\nDetails: ${JSON.stringify(errorBody)}`;
+                    experimentId = await mlflowClient.createExperiment(fullExperimentPath);
+                    this.logger.info(`Created new MLflow experiment: ${fullExperimentPath} (ID: ${experimentId})`);
                 }
-                catch {
-                    errorDetails += `\nRaw body: ${error.response.body}`;
+                catch (createError) {
+                    if (createError.message?.includes('RESOURCE_ALREADY_EXISTS') ||
+                        createError.message?.includes('already exists')) {
+                        this.logger.info(`Experiment ${fullExperimentPath} already exists, fetching its ID...`);
+                        try {
+                            const searchResponse = await this.helpers.httpRequest({
+                                method: 'GET',
+                                url: `${databricksHost}/api/2.0/mlflow/experiments/get-by-name`,
+                                headers: {
+                                    Authorization: `Bearer ${credentials.token}`,
+                                },
+                                qs: {
+                                    experiment_name: fullExperimentPath,
+                                },
+                                json: true,
+                            });
+                            experimentId = searchResponse.experiment.experiment_id;
+                            this.logger.info(`Using existing MLflow experiment: ${fullExperimentPath} (ID: ${experimentId})`);
+                        }
+                        catch (getError) {
+                            throw new Error(`Experiment exists but could not retrieve ID: ${getError.message}`);
+                        }
+                    }
+                    else {
+                        throw createError;
+                    }
                 }
             }
-            throw new n8n_workflow_1.NodeOperationError(this.getNode(), `Failed to create MLflow experiment: ${errorMessage}${errorDetails}`);
-        }
-    }
-    else {
-        const experimentResource = this.getNodeParameter('experimentId', 0);
-        if (experimentResource.mode === 'list') {
-            experimentId = experimentResource.value;
-        }
-        else if (experimentResource.mode === 'id') {
-            experimentId = experimentResource.value;
+            catch (error) {
+                this.logger.error(`Error creating/getting experiment: ${JSON.stringify(error, null, 2)}`);
+                throw new n8n_workflow_1.NodeOperationError(this.getNode(), `Failed to create or get MLflow experiment: ${error.message}`);
+            }
         }
         else {
-            throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Please select an experiment or provide an experiment ID');
+            experimentId = this.getNodeParameter('experimentId', 0, '');
+            if (!experimentId) {
+                throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Please provide an experiment ID');
+            }
         }
+        if (!experimentId) {
+            throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Failed to get or create experiment ID');
+        }
+        mlflow.init({
+            trackingUri: process.env.MLFLOW_TRACKING_URI || "databricks",
+            experimentId: experimentId,
+        });
+        this.logger.info(`MLflow initialized with experiment ID: ${experimentId}`);
     }
-    mlflow.init({
-        trackingUri: process.env.MLFLOW_TRACKING_URI || "databricks",
-        experimentId: experimentId,
-    });
+    else {
+        this.logger.info('MLflow logging is disabled');
+    }
     const returnData = [];
     const items = this.getInputData();
     const batchSize = this.getNodeParameter('options.batching.batchSize', 0, 1);
@@ -296,7 +278,7 @@ async function toolsAgentExecute() {
             const outputParser = await (0, N8nOutputParser_1.getOptionalOutputParser)(this, itemIndex);
             const tools = await (0, common_1.getTools)(this, outputParser);
             const options = this.getNodeParameter('options', itemIndex, {});
-            const mlflowHandler = new CallbackHandler_1.CallbackHandler({});
+            const mlflowHandler = enableMLflow ? new CallbackHandler_1.CallbackHandler({}) : undefined;
             const messages = await (0, common_1.prepareMessages)(this, itemIndex, {
                 systemMessage: options.systemMessage,
                 passthroughBinaryImages: options.passthroughBinaryImages ?? true,
@@ -311,7 +293,7 @@ async function toolsAgentExecute() {
             };
             const executeOptions = {
                 signal: this.getExecutionCancelSignal(),
-                callbacks: [mlflowHandler]
+                callbacks: mlflowHandler ? [mlflowHandler] : []
             };
             const isStreamingAvailable = 'isStreaming' in this ? this.isStreaming?.() : undefined;
             if ('isStreaming' in this &&
@@ -326,10 +308,16 @@ async function toolsAgentExecute() {
                     version: 'v2',
                     ...executeOptions,
                 });
-                const tracedProcessEventStream = mlflow.trace(processEventStream, { name: "agent_with_tools",
-                    spanType: mlflow.SpanType.CHAIN
-                });
-                return await tracedProcessEventStream(this, eventStream, itemIndex, options.returnIntermediateSteps);
+                if (enableMLflow) {
+                    const tracedProcessEventStream = mlflow.trace(processEventStream, {
+                        name: "agent_with_tools",
+                        spanType: mlflow.SpanType.CHAIN
+                    });
+                    return await tracedProcessEventStream(this, eventStream, itemIndex, options.returnIntermediateSteps);
+                }
+                else {
+                    return await processEventStream(this, eventStream, itemIndex, options.returnIntermediateSteps);
+                }
             }
             else {
                 return await executor.invoke(invokeParams, executeOptions);

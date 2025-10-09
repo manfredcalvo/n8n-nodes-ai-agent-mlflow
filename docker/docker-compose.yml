@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  n8n:
+    image: n8n-mlflow:latest
+    container_name: n8n-mlflow
+    ports:
+      - "5678:5678"
+    environment:
+      # Database configuration
+      - DB_SQLITE_POOL_SIZE=5
+
+      # Task runners
+      - N8N_RUNNERS_ENABLED=true
+
+      # Security settings
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      - N8N_GIT_NODE_DISABLE_BARE_REPOS=true
+
+      # Optional: Set timezone
+      - GENERIC_TIMEZONE=America/Sao_Paulo
+      - TZ=America/Sao_Paulo
+    volumes:
+      - n8n_data:/home/node/.n8n
+    restart: unless-stopped
+
+volumes:
+  n8n_data:

@@ -2,14 +2,14 @@
 
 ![n8n AI Agent with MLflow](https://github.com/manfredcalvo/n8n-nodes-ai-agent-mlflow/blob/main/assets/node-example.png?raw=true)
 
-An **n8n community node** that provides an **AI Agent with Databricks MLflow observability**.
-Built on LangChain's ToolCallingAgent, this node adds comprehensive tracing of your agent's reasoning, tool usage, and LLM interactions directly to Databricks MLflow.
+An **n8n community node** that provides an **AI Agent with optional Databricks MLflow observability**.
+Built on LangChain's ToolCallingAgent, this node can optionally add comprehensive tracing of your agent's reasoning, tool usage, and LLM interactions directly to Databricks MLflow.
 
 **Key Features:**
 - 🤖 **Full AI Agent** - Tool calling, memory, structured outputs, streaming
-- 📊 **MLflow Tracing** - Automatic span creation for agents, LLMs, and tools
+- 📊 **Optional MLflow Tracing** - Enable/disable MLflow logging with a single toggle
 - 🔧 **MCP Support** - Works with Model Context Protocol (MCP) toolkits
-- 🏢 **Databricks-First** - Built specifically for Databricks MLflow 3.0+
+- 🏢 **Databricks-First** - Built specifically for Databricks MLflow 3.0+ (when enabled)
 
 ---
 
@@ -38,8 +38,9 @@ Built on LangChain's ToolCallingAgent, this node adds comprehensive tracing of y
 - ✅ **Fallback Models** - Automatic failover to secondary model
 - ✅ **Binary Images** - Automatic passthrough of images to vision models
 
-### MLflow Observability
-- 📊 **Automatic Tracing** - Creates MLflow spans for every step
+### MLflow Observability (Optional)
+- 🔘 **Toggle On/Off** - Enable MLflow logging with a simple checkbox
+- 📊 **Automatic Tracing** - Creates MLflow spans for every step when enabled
 - 🔍 **Span Types**:
   - `AGENT` - Overall agent execution
   - `CHAT_MODEL` - LLM calls with token usage
@@ -92,7 +93,7 @@ docker run -it -p 5678:5678 \
 
 Access n8n at [http://localhost:5678](http://localhost:5678)
 
-> **Note:** All configuration (credentials and experiment selection) is done through the n8n UI. No environment variables are needed!
+> **Note:** MLflow logging is **optional**. You can use this node as a standard AI Agent without MLflow, or enable MLflow tracing with a simple checkbox in the node settings.
 
 ---
 
@@ -120,7 +121,15 @@ n8n start
 
 ## Configuration
 
-### Databricks Credentials
+### Enabling MLflow (Optional)
+
+MLflow logging is **disabled by default**. To enable it:
+
+1. Add the **AI Agent with MLflow** node to your workflow
+2. Toggle **"Enable MLflow Logging"** to ON
+3. Configure Databricks credentials and experiment (options appear when enabled)
+
+### Databricks Credentials (Required only if MLflow is enabled)
 
 This node uses **n8n credentials** for Databricks authentication. No environment variables are required!
 
@@ -136,20 +145,16 @@ This node uses **n8n credentials** for Databricks authentication. No environment
 | **Personal Access Token** | Token with MLflow write access | `dapixxxxxxxxxxxxxxxxxxxxxx` |
 
 4. Click **"Create"** to save the credential
-5. When adding the **AI Agent with MLflow** node to your workflow, select this credential
+5. When adding the **AI Agent with MLflow** node, enable MLflow logging and select this credential
 
 > **Note:** The credential includes a built-in test that verifies connectivity to your Databricks workspace.
 
-### MLflow Experiment Configuration
+### MLflow Experiment Configuration (When MLflow is enabled)
 
-When configuring the node, you can:
+When MLflow logging is enabled, you can:
 
-1. **Select Existing Experiment** - Choose from a list of your existing MLflow experiments
-2. **Create New Experiment** - Provide a name and the node will create a new experiment automatically
-
-The experiment selection includes:
-- **From List** - Browse and search your existing experiments
-- **By ID** - Enter an experiment ID directly if you know it
+1. **Select Existing Experiment** - Enter an existing experiment ID
+2. **Create New Experiment** - Provide a name and the node will create it automatically
 
 ### Getting Databricks Information
 
@@ -367,13 +372,15 @@ You may see this warning in logs:
 ## Version History
 
 ### v0.1.0 (Current)
-- ✅ Initial release with MLflow tracing
+- ✅ Initial release with optional MLflow tracing
 - ✅ Full ToolCallingAgent support
 - ✅ MCP Toolkit detection and expansion
 - ✅ Tool validation and auto-correction
+- ✅ **Optional MLflow logging** - Enable/disable with a checkbox
 - ✅ **n8n credentials support for Databricks authentication** (host & token)
 - ✅ **Dynamic experiment management** (select existing or create new)
 - ✅ **No environment variables required** - all configuration via UI
+- ✅ Works as standalone AI Agent without MLflow
 - ✅ Streaming support
 - ✅ Fallback model support
 - ✅ Enhanced error messages
@@ -414,8 +421,7 @@ MIT © 2025
 ## Acknowledgments
 
 - Original Langfuse implementation by [@rorubyy](https://github.com/rorubyy)
-- MLflow adaptation by [@manfredcalvo](https://github.com/manfredcalvo)
-- Fixes and enhancements with assistance from Claude (Anthropic)
+- MLflow adaptation and optional logging feature by [@manfredcalvo](https://github.com/manfredcalvo)
 
 ---
 
