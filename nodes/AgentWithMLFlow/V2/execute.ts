@@ -325,7 +325,19 @@ export async function toolsAgentExecute(
         let experimentId: string | undefined;
 
         try {
+            // Initialize MLflow client for experiment management
+            const client = new mlflow.MlflowClient({
+                trackingUri: 'databricks',
+                host: databricksHost,
+                databricksToken: credentials.token as string,
+            });
+
             try {
+                // Try to create experiment using SDK
+                experimentId = await client.createExperiment(experimentName);
+            } catch (createError: unknown) {
+                // Experiment already exists, get ID by name
+                // Note: MlflowClient doesn't have getExperimentByName method
                 const getResponse = await this.helpers.request({
                     method: 'GET',
                     url: `${databricksHost}/api/2.0/mlflow/experiments/get-by-name`,
@@ -341,25 +353,8 @@ export async function toolsAgentExecute(
 
                 if (getResponse && getResponse.experiment && getResponse.experiment.experiment_id) {
                     experimentId = getResponse.experiment.experiment_id;
-                }
-            } catch (getError: unknown) {
-                const createResponse = await this.helpers.request({
-                    method: 'POST',
-                    url: `${databricksHost}/api/2.0/mlflow/experiments/create`,
-                    headers: {
-                        'Authorization': `Bearer ${credentials.token}`,
-                        'Content-Type': 'application/json',
-                    },
-                    body: {
-                        name: experimentName,
-                    },
-                    json: true,
-                });
-
-                if (createResponse && createResponse.experiment_id) {
-                    experimentId = createResponse.experiment_id;
                 } else {
-                    throw new Error('Failed to get experiment ID from create response');
+                    throw createError;
                 }
             }
 
@@ -509,12 +504,16 @@ export async function toolsAgentExecute(
                 mlflowHandler
             );
             // Invoke with fallback logic
-            const invokeParams = {
+            const invokeParams: any = {
                 input,
                 system_message: options.systemMessage ?? SYSTEM_MESSAGE,
-                formatting_instructions:
-                    'IMPORTANT: For your response to user, you MUST use the `format_final_json_response` tool with your complete answer formatted according to the required schema. Do not attempt to format the JSON manually - always use this tool. Your response will be rejected if it is not properly formatted through this tool. Only use this tool once you are ready to provide your final answer.',
             };
+
+            // Only include formatting_instructions if outputParser is present
+            if (outputParser) {
+                invokeParams.formatting_instructions =
+                    'IMPORTANT: For your response to user, you MUST use the `format_final_json_response` tool with your complete answer formatted according to the required schema. Do not attempt to format the JSON manually - always use this tool. Your response will be rejected if it is not properly formatted through this tool. Only use this tool once you are ready to provide your final answer.';
+            }
             const executeOptions = {
                 signal: this.getExecutionCancelSignal(),
                 callbacks: mlflowHandler ? [mlflowHandler] : []
@@ -566,7 +565,21 @@ export async function toolsAgentExecute(
                 }
             } else {
                 // Handle regular execution without streaming
-                return await executor.invoke(invokeParams, executeOptions)
+                if (enableMLflow) {
+                    // Wrap executor.invoke with MLflow tracing
+                    const tracedInvoke = mlflow.trace(
+                        async (params: any, options: any) => {
+                            return await executor.invoke(params, options);
+                        },
+                        {
+                            name: "agent_with_tools",
+                            spanType: mlflow.SpanType.CHAIN
+                        }
+                    );
+                    return await tracedInvoke(invokeParams, executeOptions);
+                } else {
+                    return await executor.invoke(invokeParams, executeOptions);
+                }
             }
         });
 
