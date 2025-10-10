@@ -9,6 +9,7 @@ import { promptTypeOptions, textFromPreviousNode, textInput } from './src/utils/
 import { getToolsAgentProperties } from './V2/description';
 import { toolsAgentExecute } from './V2/execute';
 import { getInputs } from './V2/utils';
+import { getScorerOptions } from './src/utils/scorers';
 
 export class AgentWithMLFlow implements INodeType {
 	description: INodeTypeDescription = {
@@ -113,6 +114,103 @@ export class AgentWithMLFlow implements INodeType {
 			type: 'boolean',
 			default: false,
 			description: 'Whether to log agent execution traces to MLflow. Uses workflow ID as experiment name, creating it if needed.',
+		},
+		{
+			displayName: 'Enable Quality Monitoring',
+			name: 'enableMLflowMonitoring',
+			type: 'boolean',
+			default: false,
+			description: 'Automatically evaluate agent responses for safety and correctness',
+			displayOptions: {
+				show: {
+					enableMLflow: [true],
+				},
+			},
+		},
+		{
+			displayName: '⚠️ Important: Each scorer type (except Guidelines) can only be added once. Adding duplicates will cause execution to fail.',
+			name: 'scorerWarning',
+			type: 'notice',
+			default: '',
+			displayOptions: {
+				show: {
+					enableMLflow: [true],
+					enableMLflowMonitoring: [true],
+				},
+			},
+		},
+		{
+			displayName: 'Quality Scorers',
+			name: 'qualityScorers',
+			type: 'fixedCollection',
+			typeOptions: {
+				multipleValues: true,
+			},
+			default: {},
+			placeholder: 'Add Scorer',
+			description: 'Configure quality scorers to evaluate agent responses. Changes take effect on next execution (existing scorers are stopped and restarted).',
+			noDataExpression: true,
+			displayOptions: {
+				show: {
+					enableMLflow: [true],
+					enableMLflowMonitoring: [true],
+				},
+			},
+			options: [
+				{
+					name: 'scorers',
+					displayName: 'Scorer',
+					values: [
+						{
+							displayName: 'Name',
+							name: 'name',
+							type: 'string',
+							default: '',
+							placeholder: 'e.g., my_safety_check',
+							description: 'Optional custom identifier for this scorer',
+							noDataExpression: true,
+						},
+						{
+							displayName: 'Type',
+							name: 'type',
+							type: 'options',
+							default: 'safety',
+							description: 'Quality metric to evaluate. Note: Only "Custom Guidelines" can be added multiple times.',
+							options: getScorerOptions(),
+							noDataExpression: true,
+						},
+						{
+							displayName: 'Sample Rate (%)',
+							name: 'sampleRate',
+							type: 'number',
+							default: 100,
+							description: 'Percentage to evaluate (1-100)',
+							typeOptions: {
+								minValue: 1,
+								maxValue: 100,
+								numberPrecision: 0,
+							},
+							noDataExpression: true,
+						},
+						{
+							displayName: 'Guidelines',
+							name: 'guidelines',
+							type: 'string',
+							typeOptions: {
+								rows: 4,
+							},
+							default: '',
+							placeholder: 'e.g., The response must not mention competitor products',
+							description: 'Specific guidelines to evaluate against',
+							displayOptions: {
+								show: {
+									type: ['guidelines'],
+								},
+							},
+						},
+					],
+				},
+			],
 		},
 			{
 				displayName: 'Enable Fallback Model',
