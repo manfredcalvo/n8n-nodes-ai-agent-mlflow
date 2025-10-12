@@ -1,5 +1,0 @@
-import type { INodeType, INodeTypeDescription } from 'n8n-workflow';
-export declare class CrowdDev implements INodeType {
-    description: INodeTypeDescription;
-}
-//# sourceMappingURL=CrowdDev.node.d.ts.map
