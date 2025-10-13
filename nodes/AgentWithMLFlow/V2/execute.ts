@@ -42,12 +42,9 @@ import {
     validateDatabricksHost,
 } from '../src/utils/security';
 import {
-    isPythonAvailable,
-    isMlflowAvailable,
     activateScorers,
     type ScorerConfig,
 } from '../src/utils/pythonExecutor';
-import { ALLOW_MULTIPLE_INSTANCES, getScorerDisplayName } from '../src/utils/scorers';
 
 // MLflow will be initialized dynamically per execution based on credentials
 
@@ -379,111 +376,152 @@ export async function toolsAgentExecute(
             // Handle monitoring configuration if enabled
             const enableMonitoring = this.getNodeParameter('enableMLflowMonitoring', 0, false) as boolean;
             if (enableMonitoring) {
-                const qualityScorers = this.getNodeParameter('qualityScorers', 0, {}) as {
-                    scorers?: Array<{ name?: string; type: string; sampleRate: number; guidelines?: string }>;
-                };
+                // Build scorers list from checkboxes
+                const scorersList: Array<{ name?: string; type: string; sampleRate: number; guidelines?: string }> = [];
 
-                const scorersList = qualityScorers.scorers || [];
+                // Safety Scorer
+                const enableSafety = this.getNodeParameter('enableSafetyScorer', 0, false) as boolean;
+                if (enableSafety) {
+                    const sampleRate = this.getNodeParameter('safetySampleRate', 0, 100) as number;
+                    scorersList.push({
+                        name: 'safety_scorer',
+                        type: 'safety',
+                        sampleRate: sampleRate
+                    });
+                }
+
+                // Correctness Scorer
+                const enableCorrectness = this.getNodeParameter('enableCorrectnessScorer', 0, false) as boolean;
+                if (enableCorrectness) {
+                    const sampleRate = this.getNodeParameter('correctnessSampleRate', 0, 100) as number;
+                    scorersList.push({
+                        name: 'correctness_scorer',
+                        type: 'correctness',
+                        sampleRate: sampleRate
+                    });
+                }
+
+                // Relevance to Query Scorer
+                const enableRelevanceToQuery = this.getNodeParameter('enableRelevanceToQueryScorer', 0, false) as boolean;
+                if (enableRelevanceToQuery) {
+                    const sampleRate = this.getNodeParameter('relevanceToQuerySampleRate', 0, 100) as number;
+                    scorersList.push({
+                        name: 'relevance_to_query_scorer',
+                        type: 'relevance_to_query',
+                        sampleRate: sampleRate
+                    });
+                }
+
+                // Retrieval Groundedness Scorer
+                const enableRetrievalGroundedness = this.getNodeParameter('enableRetrievalGroundednessScorer', 0, false) as boolean;
+                if (enableRetrievalGroundedness) {
+                    const sampleRate = this.getNodeParameter('retrievalGroundednessSampleRate', 0, 100) as number;
+                    scorersList.push({
+                        name: 'retrieval_groundedness_scorer',
+                        type: 'retrieval_groundedness',
+                        sampleRate: sampleRate
+                    });
+                }
+
+                // Retrieval Relevance Scorer
+                const enableRetrievalRelevance = this.getNodeParameter('enableRetrievalRelevanceScorer', 0, false) as boolean;
+                if (enableRetrievalRelevance) {
+                    const sampleRate = this.getNodeParameter('retrievalRelevanceSampleRate', 0, 100) as number;
+                    scorersList.push({
+                        name: 'retrieval_relevance_scorer',
+                        type: 'retrieval_relevance',
+                        sampleRate: sampleRate
+                    });
+                }
+
+                // Retrieval Sufficiency Scorer
+                const enableRetrievalSufficiency = this.getNodeParameter('enableRetrievalSufficiencyScorer', 0, false) as boolean;
+                if (enableRetrievalSufficiency) {
+                    const sampleRate = this.getNodeParameter('retrievalSufficiencySampleRate', 0, 100) as number;
+                    scorersList.push({
+                        name: 'retrieval_sufficiency_scorer',
+                        type: 'retrieval_sufficiency',
+                        sampleRate: sampleRate
+                    });
+                }
+
+                // Guidelines Scorer
+                const enableGenericGuidelines = this.getNodeParameter('enableGenericGuidelinesScorer', 0, false) as boolean;
+                if (enableGenericGuidelines) {
+                    const sampleRate = this.getNodeParameter('genericGuidelinesSampleRate', 0, 100) as number;
+                    const guidelines = this.getNodeParameter('genericGuidelines', 0, '') as string;
+
+                    // Validate guidelines text
+                    if (!guidelines || guidelines.trim() === '') {
+                        throw new NodeOperationError(
+                            this.getNode(),
+                            'Guidelines scorer requires the "Guidelines Text" field to be filled with your evaluation criteria.'
+                        );
+                    }
+
+                    scorersList.push({
+                        name: 'guidelines_scorer',
+                        type: 'guidelines',
+                        sampleRate: sampleRate,
+                        guidelines: guidelines
+                    });
+                }
 
                 if (scorersList.length === 0) {
                     this.logger.info('Quality monitoring enabled but no scorers configured');
                 } else {
-                    // Validate scorers based on their characteristics
-                    const seenSingletonTypes = new Set<string>();
+                    // Try to activate scorers via Python
+                    this.logger.info('Attempting to activate scorers via Python...');
 
-                    for (const scorer of scorersList) {
-                        // Validate no duplicates for scorers that should be unique
-                        if (!ALLOW_MULTIPLE_INSTANCES.has(scorer.type)) {
-                            if (seenSingletonTypes.has(scorer.type)) {
-                                const displayName = getScorerDisplayName(scorer.type);
-                                throw new NodeOperationError(
-                                    this.getNode(),
-                                    `Duplicate "${displayName}" scorer detected. Only Guidelines scorer can have multiple instances. Remove the duplicate.`
-                                );
-                            }
-                            seenSingletonTypes.add(scorer.type);
-                        }
+                    // Build MLflow config
+                    const mlflowConfig = {
+                        experimentName: experimentName,
+                        databricksHost: databricksHost,
+                        databricksToken: credentials.token as string,
+                    };
 
-                        // Validate guidelines scorer has guidelines text
-                        if (scorer.type === 'guidelines' && (!scorer.guidelines || scorer.guidelines.trim() === '')) {
-                            throw new NodeOperationError(
-                                this.getNode(),
-                                'Guidelines scorer requires the "Guidelines" field to be filled with your evaluation criteria.'
-                            );
-                        }
+                    // Build scorer configs with individual sample rates
+                    const scorerConfigs: ScorerConfig[] = scorersList.map((scorer) => ({
+                        experimentName: experimentName,
+                        databricksHost: databricksHost,
+                        databricksToken: credentials.token as string,
+                        name: scorer.name,
+                        scorerType: scorer.type,
+                        sampleRate: scorer.sampleRate / 100,
+                        guidelines: scorer.guidelines,
+                    }));
 
-                        // Recommend unique names for multi-instance scorers
-                        if (ALLOW_MULTIPLE_INSTANCES.has(scorer.type) && scorersList.filter(s => s.type === scorer.type).length > 1) {
-                            const duplicatesWithoutName = scorersList.filter(s =>
-                                s.type === scorer.type && (!s.name || s.name.trim() === '')
-                            );
-                            if (duplicatesWithoutName.length > 0) {
-                                this.logger.warn(
-                                    `Multiple "${scorer.type}" scorers detected without custom names. Consider adding unique names to distinguish them (e.g., "factual_accuracy", "citation_correctness").`
-                                );
-                            }
-                        }
-                    }
-                    // Try to activate scorers via Python if available
-                    const pythonAvailable = await isPythonAvailable(this.logger);
+                    const result = await activateScorers(mlflowConfig, scorerConfigs, this.logger);
 
-                    if (pythonAvailable) {
-                        this.logger.info('Python detected, checking for MLflow installation...');
-                        const mlflowAvailable = await isMlflowAvailable(this.logger);
+                    if (result.success) {
+                        this.logger.info('Scorers activated successfully:');
+                        scorersList.forEach((scorer) => {
+                            this.logger.info(`  - ${scorer.type}: ${scorer.sampleRate}% sample rate`);
+                        });
 
-                        if (mlflowAvailable) {
-                            this.logger.info('Attempting to activate scorers via Python...');
+                        // Log success metadata
+                        try {
+                            const tagEndpoint = `${databricksHost}/api/2.0/mlflow/experiments/set-experiment-tag`;
+                            const requestHeaders = {
+                                'Authorization': `Bearer ${credentials.token}`,
+                                'Content-Type': 'application/json',
+                            };
 
-                            // Build scorer configs with individual sample rates
-                            const scorerConfigs: ScorerConfig[] = scorersList.map((scorer) => ({
-                                experimentName: experimentName,
-                                databricksHost: databricksHost,
-                                databricksToken: credentials.token as string,
-                                name: scorer.name,
-                                scorerType: scorer.type,
-                                sampleRate: scorer.sampleRate / 100,
-                                guidelines: scorer.guidelines,
-                            }));
-
-                            const result = await activateScorers(scorerConfigs, this.logger);
-
-                            if (result.success) {
-                                this.logger.info('Scorers activated successfully:');
-                                scorersList.forEach((scorer) => {
-                                    this.logger.info(`  - ${scorer.type}: ${scorer.sampleRate}% sample rate`);
-                                });
-
-                                // Log success metadata
-                                try {
-                                    const tagEndpoint = `${databricksHost}/api/2.0/mlflow/experiments/set-experiment-tag`;
-                                    const requestHeaders = {
-                                        'Authorization': `Bearer ${credentials.token}`,
-                                        'Content-Type': 'application/json',
-                                    };
-
-                                    await this.helpers.httpRequest({
-                                        method: 'POST',
-                                        url: tagEndpoint,
-                                        headers: requestHeaders,
-                                        body: {
-                                            experiment_id: experimentId,
-                                            key: 'monitoring.auto_activated',
-                                            value: 'true',
-                                        },
-                                    });
-                                } catch (tagError) {
-                                    // Ignore tag errors
-                                }
-                            } else {
-                                this.logger.warn(`Failed to activate scorers via Python: ${result.error}`);
-                                this.logger.warn('Falling back to metadata-only approach');
-                            }
-                        } else {
-                            this.logger.info('MLflow not installed. Install with: pip install "mlflow[databricks]"');
-                            this.logger.info('Falling back to metadata-only approach');
+                            await this.helpers.httpRequest({
+                                method: 'POST',
+                                url: tagEndpoint,
+                                headers: requestHeaders,
+                                body: {
+                                    experiment_id: experimentId,
+                                    key: 'monitoring.auto_activated',
+                                    value: 'true',
+                                },
+                            });
+                        } catch (tagError) {
+                            // Ignore tag errors
                         }
                     } else {
-                        this.logger.info('Python not available. To enable automatic scorer activation, install Python 3');
+                        this.logger.warn(`Failed to activate scorers: ${result.error}`);
                         this.logger.info('Falling back to metadata-only approach');
                     }
 
@@ -498,7 +536,7 @@ export async function toolsAgentExecute(
                         // Store scorer configuration as JSON metadata
                         const scorersMetadata = scorersList.map((s) => ({
                             type: s.type,
-                            sampleRate: s.sampleRate / 100,
+                            sampleRate: s.sampleRate,
                         }));
 
                         await this.helpers.httpRequest({

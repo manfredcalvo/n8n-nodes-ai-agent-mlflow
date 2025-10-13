@@ -9,7 +9,6 @@ import { promptTypeOptions, textFromPreviousNode, textInput } from './src/utils/
 import { getToolsAgentProperties } from './V2/description';
 import { toolsAgentExecute } from './V2/execute';
 import { getInputs } from './V2/utils';
-import { getScorerOptions } from './src/utils/scorers';
 
 export class AgentWithMLFlow implements INodeType {
 	description: INodeTypeDescription = {
@@ -127,11 +126,13 @@ export class AgentWithMLFlow implements INodeType {
 				},
 			},
 		},
+		// Safety Scorer
 		{
-			displayName: '⚠️ Important: Each scorer type (except Guidelines) can only be added once. Adding duplicates will cause execution to fail.',
-			name: 'scorerWarning',
-			type: 'notice',
-			default: '',
+			displayName: 'Safety',
+			name: 'enableSafetyScorer',
+			type: 'boolean',
+			default: false,
+			description: 'Evaluate responses for safety concerns',
 			displayOptions: {
 				show: {
 					enableMLflow: [true],
@@ -140,77 +141,239 @@ export class AgentWithMLFlow implements INodeType {
 			},
 		},
 		{
-			displayName: 'Quality Scorers',
-			name: 'qualityScorers',
-			type: 'fixedCollection',
+			displayName: 'Sample Rate (%)',
+			name: 'safetySampleRate',
+			type: 'number',
+			default: 100,
+			description: 'Percentage of responses to evaluate',
 			typeOptions: {
-				multipleValues: true,
+				minValue: 1,
+				maxValue: 100,
+				numberPrecision: 0,
 			},
-			default: {},
-			placeholder: 'Add Scorer',
-			description: 'Configure quality scorers to evaluate agent responses. Changes take effect on next execution (existing scorers are stopped and restarted).',
-			noDataExpression: true,
+			displayOptions: {
+				show: {
+					enableMLflow: [true],
+					enableMLflowMonitoring: [true],
+					enableSafetyScorer: [true],
+				},
+			},
+		},
+		// Correctness Scorer
+		{
+			displayName: 'Correctness',
+			name: 'enableCorrectnessScorer',
+			type: 'boolean',
+			default: false,
+			description: 'Evaluate responses for correctness',
 			displayOptions: {
 				show: {
 					enableMLflow: [true],
 					enableMLflowMonitoring: [true],
 				},
 			},
-			options: [
-				{
-					name: 'scorers',
-					displayName: 'Scorer',
-					values: [
-						{
-							displayName: 'Name',
-							name: 'name',
-							type: 'string',
-							default: '',
-							placeholder: 'e.g., my_safety_check',
-							description: 'Optional custom identifier for this scorer',
-							noDataExpression: true,
-						},
-						{
-							displayName: 'Type',
-							name: 'type',
-							type: 'options',
-							default: 'safety',
-							description: 'Quality metric to evaluate. Note: Only "Custom Guidelines" can be added multiple times.',
-							options: getScorerOptions(),
-							noDataExpression: true,
-						},
-						{
-							displayName: 'Sample Rate (%)',
-							name: 'sampleRate',
-							type: 'number',
-							default: 100,
-							description: 'Percentage to evaluate (1-100)',
-							typeOptions: {
-								minValue: 1,
-								maxValue: 100,
-								numberPrecision: 0,
-							},
-							noDataExpression: true,
-						},
-						{
-							displayName: 'Guidelines',
-							name: 'guidelines',
-							type: 'string',
-							typeOptions: {
-								rows: 4,
-							},
-							default: '',
-							placeholder: 'e.g., The response must not mention competitor products',
-							description: 'Specific guidelines to evaluate against',
-							displayOptions: {
-								show: {
-									type: ['guidelines'],
-								},
-							},
-						},
-					],
+		},
+		{
+			displayName: 'Sample Rate (%)',
+			name: 'correctnessSampleRate',
+			type: 'number',
+			default: 100,
+			description: 'Percentage of responses to evaluate',
+			typeOptions: {
+				minValue: 1,
+				maxValue: 100,
+				numberPrecision: 0,
+			},
+			displayOptions: {
+				show: {
+					enableMLflow: [true],
+					enableMLflowMonitoring: [true],
+					enableCorrectnessScorer: [true],
 				},
-			],
+			},
+		},
+		// Relevance to Query Scorer
+		{
+			displayName: 'Relevance to Query',
+			name: 'enableRelevanceToQueryScorer',
+			type: 'boolean',
+			default: false,
+			description: 'Evaluate if responses are relevant to the query',
+			displayOptions: {
+				show: {
+					enableMLflow: [true],
+					enableMLflowMonitoring: [true],
+				},
+			},
+		},
+		{
+			displayName: 'Sample Rate (%)',
+			name: 'relevanceToQuerySampleRate',
+			type: 'number',
+			default: 100,
+			description: 'Percentage of responses to evaluate',
+			typeOptions: {
+				minValue: 1,
+				maxValue: 100,
+				numberPrecision: 0,
+			},
+			displayOptions: {
+				show: {
+					enableMLflow: [true],
+					enableMLflowMonitoring: [true],
+					enableRelevanceToQueryScorer: [true],
+				},
+			},
+		},
+		// Retrieval Groundedness Scorer
+		{
+			displayName: 'Retrieval Groundedness',
+			name: 'enableRetrievalGroundednessScorer',
+			type: 'boolean',
+			default: false,
+			description: 'Evaluate if responses are grounded in retrieved content',
+			displayOptions: {
+				show: {
+					enableMLflow: [true],
+					enableMLflowMonitoring: [true],
+				},
+			},
+		},
+		{
+			displayName: 'Sample Rate (%)',
+			name: 'retrievalGroundednessSampleRate',
+			type: 'number',
+			default: 100,
+			description: 'Percentage of responses to evaluate',
+			typeOptions: {
+				minValue: 1,
+				maxValue: 100,
+				numberPrecision: 0,
+			},
+			displayOptions: {
+				show: {
+					enableMLflow: [true],
+					enableMLflowMonitoring: [true],
+					enableRetrievalGroundednessScorer: [true],
+				},
+			},
+		},
+		// Retrieval Relevance Scorer
+		{
+			displayName: 'Retrieval Relevance',
+			name: 'enableRetrievalRelevanceScorer',
+			type: 'boolean',
+			default: false,
+			description: 'Evaluate if retrieved content is relevant',
+			displayOptions: {
+				show: {
+					enableMLflow: [true],
+					enableMLflowMonitoring: [true],
+				},
+			},
+		},
+		{
+			displayName: 'Sample Rate (%)',
+			name: 'retrievalRelevanceSampleRate',
+			type: 'number',
+			default: 100,
+			description: 'Percentage of responses to evaluate',
+			typeOptions: {
+				minValue: 1,
+				maxValue: 100,
+				numberPrecision: 0,
+			},
+			displayOptions: {
+				show: {
+					enableMLflow: [true],
+					enableMLflowMonitoring: [true],
+					enableRetrievalRelevanceScorer: [true],
+				},
+			},
+		},
+		// Retrieval Sufficiency Scorer
+		{
+			displayName: 'Retrieval Sufficiency',
+			name: 'enableRetrievalSufficiencyScorer',
+			type: 'boolean',
+			default: false,
+			description: 'Evaluate if retrieved content is sufficient',
+			displayOptions: {
+				show: {
+					enableMLflow: [true],
+					enableMLflowMonitoring: [true],
+				},
+			},
+		},
+		{
+			displayName: 'Sample Rate (%)',
+			name: 'retrievalSufficiencySampleRate',
+			type: 'number',
+			default: 100,
+			description: 'Percentage of responses to evaluate',
+			typeOptions: {
+				minValue: 1,
+				maxValue: 100,
+				numberPrecision: 0,
+			},
+			displayOptions: {
+				show: {
+					enableMLflow: [true],
+					enableMLflowMonitoring: [true],
+					enableRetrievalSufficiencyScorer: [true],
+				},
+			},
+		},
+		// Guidelines Scorer
+		{
+			displayName: 'Guidelines',
+			name: 'enableGenericGuidelinesScorer',
+			type: 'boolean',
+			default: false,
+			description: 'Evaluate responses against custom guidelines',
+			displayOptions: {
+				show: {
+					enableMLflow: [true],
+					enableMLflowMonitoring: [true],
+				},
+			},
+		},
+		{
+			displayName: 'Sample Rate (%)',
+			name: 'genericGuidelinesSampleRate',
+			type: 'number',
+			default: 100,
+			description: 'Percentage of responses to evaluate',
+			typeOptions: {
+				minValue: 1,
+				maxValue: 100,
+				numberPrecision: 0,
+			},
+			displayOptions: {
+				show: {
+					enableMLflow: [true],
+					enableMLflowMonitoring: [true],
+					enableGenericGuidelinesScorer: [true],
+				},
+			},
+		},
+		{
+			displayName: 'Guidelines Text',
+			name: 'genericGuidelines',
+			type: 'string',
+			typeOptions: {
+				rows: 4,
+			},
+			default: '',
+			placeholder: 'e.g., The response must not mention competitor products',
+			description: 'Specific guidelines to evaluate against',
+			displayOptions: {
+				show: {
+					enableMLflow: [true],
+					enableMLflowMonitoring: [true],
+					enableGenericGuidelinesScorer: [true],
+				},
+			},
 		},
 			{
 				displayName: 'Enable Fallback Model',
