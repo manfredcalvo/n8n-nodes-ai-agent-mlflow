@@ -11,13 +11,16 @@ export interface PythonExecutionResult {
     error?: string;
 }
 
+export interface MLFlowConfig{
+    experimentName: string;
+    databricksHost: string;
+    databricksToken: string;
+}
+
 /**
  * Configuration for a single MLflow scorer activation
  */
 export interface ScorerConfig {
-    experimentName: string;
-    databricksHost: string;
-    databricksToken: string;
     name?: string;
     scorerType: string;
     sampleRate: number;
@@ -218,6 +221,7 @@ except Exception as e:
 }
 
 export async function activateScorers(
+    mlflow_config: MLFlowConfig,
     configs: ScorerConfig[],
     logger?: Logger,
 ): Promise<PythonExecutionResult> {
@@ -231,15 +235,15 @@ export async function activateScorers(
         }
 
         const script = generateScorerScript(configs);
+        //In this function we create the json that contains the scorers config.
+        //In this function you can keep all the validations you are adding in generateScorerScript.
+        //json_string = generateScorersJsonConfig(configs);
 
-        // Use first config for environment variables (all scorers use same credentials)
-        const firstConfig = configs[0];
-
-        const python = spawn('python3', ['-c', script], {
+        const python = spawn('python3', ['-c', "create_scorers.py", "--creation_config", "json_string"], {
             env: {
                 ...process.env,
-                DATABRICKS_HOST: firstConfig.databricksHost,
-                DATABRICKS_TOKEN: firstConfig.databricksToken,
+                DATABRICKS_HOST: mlflow_config.databricksHost,
+                DATABRICKS_TOKEN: mlflow_config.databricksToken,
             },
         });
 
