@@ -740,47 +740,16 @@ export async function toolsAgentExecute(
                         ...executeOptions,
                     },
                 );
-
-                // Only trace with MLflow if enabled
-                if (enableMLflow) {
-                    const tracedProcessEventStream = mlflow.trace(processEventStream,
-                        {
-                            name: "agent_with_tools",
-                            spanType: mlflow.SpanType.CHAIN
-                        }
-                    );
-
-                    return await tracedProcessEventStream(
+                
+                return await processEventStream(
                         this,
                         eventStream,
                         itemIndex,
                         options.returnIntermediateSteps,
-                    );
-                } else {
-                    return await processEventStream(
-                        this,
-                        eventStream,
-                        itemIndex,
-                        options.returnIntermediateSteps,
-                    );
-                }
+                );
+                
             } else {
-                // Handle regular execution without streaming
-                if (enableMLflow) {
-                    // Wrap executor.invoke with MLflow tracing
-                    const tracedInvoke = mlflow.trace(
-                        async (params: any, options: any) => {
-                            return await executor.invoke(params, options);
-                        },
-                        {
-                            name: "agent_with_tools",
-                            spanType: mlflow.SpanType.CHAIN
-                        }
-                    );
-                    return await tracedInvoke(invokeParams, executeOptions);
-                } else {
-                    return await executor.invoke(invokeParams, executeOptions);
-                }
+                return await executor.invoke(invokeParams, executeOptions); 
             }
         });
 
