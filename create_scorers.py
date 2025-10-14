@@ -40,40 +40,39 @@ def get_class_by_name(name:str):
     try:
         return CLASS_BY_NAME[name]
     except:
-        raise NameError("Scorer with name '{name}' is not a pre-built mlflow scorer.")
+        raise NameError(f"Scorer with name '{name}' is not a pre-built mlflow scorer.")
 
 def create_or_update_scorers(experiment_name, scorers_config):
-    
     mlflow.set_tracking_uri('databricks')
     mlflow.set_experiment(experiment_name)
 
     logger.info(f"MLflow configured for experiment: {experiment_name}")
 
     config_scorer_names = set(scorer["name"] for scorer in scorers_config)
+    actual_scorers = dict()
 
-    # List all existing scorers and clean up n8n-managed ones not in current config
     try:
         existing_scorers = list_scorers()
-        actual_scorers = dict()
         for scorer_info in existing_scorers:
             scorer_name = scorer_info.name
             actual_scorers[scorer_name] = scorer_info
-            # If it's an n8n-managed scorer (starts with 'n8n_' or was previously managed)
-            # and it's NOT in our current config, delete it
-            if scorer_name.startswith('n8n_') and scorer_name not in config_scorer_names:
-                try:
-                    delete_scorer(name=scorer_name)
-                    print(f"Deleted obsolete scorer: {scorer_name}")
-                except Exception as e:
-                    print(f"Note: Could not delete scorer {scorer_name}: {e}")
     except Exception as e:
-        print(f"Note: Could not list/cleanup existing scorers: {e}")
+        pass
 
-    # Now activate or update scorers
+    # Delete scorers not in config
+    for scorer_name in list(actual_scorers.keys()):
+        if scorer_name not in config_scorer_names:
+            try:
+                delete_scorer(name=scorer_name)
+            except Exception as e:
+                pass
 
+    # Create or update scorers
     for scorer_config in scorers_config:
         sample_rate = scorer_config['sample_rate']
         scorer_name = scorer_config['name']
+        scorer_type = scorer_config['scorer_type']
+
         if scorer_name in actual_scorers:
             logger.info(f"Updating scorer: {scorer_name}")
             actual_scorer = actual_scorers[scorer_name]
@@ -84,10 +83,9 @@ def create_or_update_scorers(experiment_name, scorers_config):
             scorer_cls = get_class_by_name(scorer_type)
             args = {"name": scorer_name}
             if scorer_type == 'Guidelines':
-                try:
-                    args["guidelines"] = scorer_config['guidelines']
-                except:
-                    raise KeyError("Guidelines scorer needs a set of guidelines to be defined.")
+                guidelines = scorer_config.get('guidelines', [])
+                if guidelines:
+                    args["guidelines"] = guidelines
             scorer_fn = scorer_cls(**args)
             created_scorer = scorer_fn.register(name=scorer_name)
             created_scorer.start(sampling_config=ScorerSamplingConfig(sample_rate=sample_rate))
