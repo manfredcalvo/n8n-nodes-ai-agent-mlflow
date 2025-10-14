@@ -36,14 +36,47 @@ import {
 } from '../src/utils/common';
 
 import { SYSTEM_MESSAGE } from '../src/utils/prompt';
+import { MLFLOW_CONSTANTS, ERROR_MESSAGES } from '../src/constants';
+import { maskTokensInText } from '../src/utils/retry';
+import {
+    validateDatabricksHost,
+} from '../src/utils/security';
+import {
+    activateScorers,
+    type ScorerConfig,
+} from '../src/utils/pythonExecutor';
 
-mlflow.init({
-  trackingUri: "databricks",
-  experimentId: "2219716542827291",
-});
+// MLflow will be initialized dynamically per execution based on credentials
 
 /**
- * Creates an agent executor with the given configuration
+ * Creates an agent executor with the given configuration.
+ *
+ * This function sets up the LangChain agent with tools, prompt, memory, and optional fallback model.
+ * If MLflow logging is enabled, it registers the callback handler for tracing.
+ *
+ * @param model - The primary chat model to use for the agent
+ * @param tools - Array of tools available to the agent
+ * @param prompt - The chat prompt template
+ * @param options - Configuration options including max iterations and intermediate steps
+ * @param outputParser - Optional output parser for structured responses
+ * @param memory - Optional chat memory for conversation history
+ * @param fallbackModel - Optional fallback model if primary model fails
+ * @param mlflowHandler - Optional MLflow callback handler for tracing
+ * @returns Configured AgentExecutor instance
+ *
+ * @example
+ * ```typescript
+ * const executor = createAgentExecutor(
+ *   chatModel,
+ *   [searchTool, calculatorTool],
+ *   promptTemplate,
+ *   { maxIterations: 10, returnIntermediateSteps: true },
+ *   outputParser,
+ *   memory,
+ *   fallbackChatModel,
+ *   mlflowHandler
+ * );
+ * ```
  */
 function createAgentExecutor(
     model: BaseChatModel,
@@ -93,6 +126,30 @@ function createAgentExecutor(
 }
 
 
+/**
+ * Processes the event stream from the agent executor in streaming mode.
+ *
+ * This function handles streaming chat model tokens as they arrive, sending them to the
+ * n8n UI in real-time. It also captures intermediate steps (tool calls and results) when requested.
+ *
+ * @param ctx - The n8n execution context
+ * @param eventStream - The iterable stream of events from the agent
+ * @param itemIndex - Index of the current item being processed
+ * @param returnIntermediateSteps - Whether to capture and return intermediate agent steps
+ * @returns Promise resolving to the complete output and optional intermediate steps
+ *
+ * @example
+ * ```typescript
+ * const result = await processEventStream(
+ *   this,
+ *   agentEventStream,
+ *   0,
+ *   true  // return intermediate steps
+ * );
+ * console.log(result.output); // "The weather is sunny..."
+ * console.log(result.intermediateSteps); // [{ action: {...}, observation: "..." }]
+ * ```
+ */
 async function processEventStream(
     ctx: IExecuteFunctions,
     eventStream: IterableReadableStream<StreamEvent>,
@@ -131,7 +188,7 @@ async function processEventStream(
             case 'on_chat_model_end':
                 // Capture full LLM response with tool calls for intermediate steps
                 if (returnIntermediateSteps && event.data) {
-                    const chatModelData = event.data as any;
+                    const chatModelData = event.data as { output?: { tool_calls?: Array<{ id: string; name: string; args: unknown; type: string }>; content?: string } };
                     const output = chatModelData.output;
 
                     // Check if this LLM response contains tool calls
@@ -156,7 +213,7 @@ async function processEventStream(
             case 'on_tool_end':
                 // Capture tool execution results and match with action
                 if (returnIntermediateSteps && event.data && agentResult.intermediateSteps!.length > 0) {
-                    const toolData = event.data as any;
+                    const toolData = event.data as { output?: unknown };
                     // Find the matching intermediate step for this tool call
                     const matchingStep = agentResult.intermediateSteps!.find(
                         (step) => !step.observation && step.action.tool === event.name,
@@ -192,33 +249,413 @@ async function processEventStream(
 export async function toolsAgentExecute(
     this: IExecuteFunctions | ISupplyDataFunctions,
 ): Promise<INodeExecutionData[][]> {
-    this.logger.debug('Executing Tools Agent V2');
+    // Check if MLflow logging is enabled
+    const enableMLflow = this.getNodeParameter('enableMLflow', 0, false) as boolean;
+
+    if (enableMLflow) {
+        // Get Databricks credentials
+        const credentials = await this.getCredentials('databricks');
+
+        if (!credentials) {
+            throw new NodeOperationError(
+                this.getNode(),
+                ERROR_MESSAGES.MISSING_CREDENTIALS,
+            );
+        }
+
+        // Validate credentials have required fields
+        if (!credentials.host || typeof credentials.host !== 'string' || credentials.host.trim() === '') {
+            throw new NodeOperationError(
+                this.getNode(),
+                ERROR_MESSAGES.EMPTY_HOST,
+            );
+        }
+
+        if (!credentials.token || typeof credentials.token !== 'string' || credentials.token.trim() === '') {
+            throw new NodeOperationError(
+                this.getNode(),
+                ERROR_MESSAGES.EMPTY_TOKEN,
+            );
+        }
+
+        // Warn if token looks suspiciously short
+        const token = credentials.token as string;
+        if (token.length < MLFLOW_CONSTANTS.MIN_DATABRICKS_TOKEN_LENGTH) {
+            this.logger.warn(ERROR_MESSAGES.SHORT_TOKEN_WARNING(token.length));
+        }
+
+        // Validate and clean Databricks host URL with security checks
+        const rawHost = credentials.host as string;
+        let databricksHost: string;
+        try {
+            const cleanedHost = rawHost.trim().replace(/\/$/, '');
+
+            // Handle case where user didn't include protocol
+            const hostWithProtocol = cleanedHost.startsWith('http')
+                ? cleanedHost
+                : `https://${cleanedHost}`;
+
+            // Security validation: Check for SSRF and invalid hosts
+            const hostValidation = validateDatabricksHost(hostWithProtocol);
+            if (!hostValidation.isValid) {
+                throw new Error(hostValidation.error);
+            }
+
+            const url = new URL(hostWithProtocol);
+
+            // Warn if using HTTP instead of HTTPS
+            if (url.protocol === 'http:') {
+                this.logger.warn(ERROR_MESSAGES.HTTP_INSECURE_WARNING(url.href));
+            } else if (url.protocol !== 'https:') {
+                throw new Error(`Host must use HTTP or HTTPS protocol, got: ${url.protocol}`);
+            }
+
+            if (!url.hostname) {
+                throw new Error('Invalid host URL: missing hostname');
+            }
+
+            databricksHost = hostValidation.sanitized!;
+        } catch (validationError: unknown) {
+            const errorMsg = validationError instanceof Error ? validationError.message : 'Invalid URL format';
+            throw new NodeOperationError(
+                this.getNode(),
+                ERROR_MESSAGES.INVALID_HOST_URL(rawHost, errorMsg)
+            );
+        }
+
+        const workflowId = this.getWorkflow().id;
+        const experimentName = `/Shared/n8n-workflows-${workflowId}`;
+
+        let experimentId: string | undefined;
+
+        try {
+            // Initialize MLflow client for experiment management
+            const client = new mlflow.MlflowClient({
+                trackingUri: 'databricks',
+                host: databricksHost,
+                databricksToken: credentials.token as string,
+            });
+
+            try {
+                // Try to create experiment using SDK
+                experimentId = await client.createExperiment(experimentName);
+            } catch (createError: unknown) {
+                // Experiment already exists, get ID by name
+                // Note: MlflowClient doesn't have getExperimentByName method
+                const getResponse = await this.helpers.request({
+                    method: 'GET',
+                    url: `${databricksHost}/api/2.0/mlflow/experiments/get-by-name`,
+                    headers: {
+                        'Authorization': `Bearer ${credentials.token}`,
+                        'Content-Type': 'application/json',
+                    },
+                    qs: {
+                        experiment_name: experimentName,
+                    },
+                    json: true,
+                });
+
+                if (getResponse && getResponse.experiment && getResponse.experiment.experiment_id) {
+                    experimentId = getResponse.experiment.experiment_id;
+                } else {
+                    throw createError;
+                }
+            }
+
+            if (!experimentId) {
+                throw new Error('Failed to get or create experiment ID');
+            }
+
+            mlflow.init({
+                trackingUri: 'databricks',
+                experimentId: experimentId,
+                host: databricksHost,
+                databricksToken: credentials.token as string,
+            });
+
+            // Handle monitoring configuration if enabled
+            const enableMonitoring = this.getNodeParameter('enableMLflowMonitoring', 0, false) as boolean;
+            if (enableMonitoring) {
+                // Build scorers list from checkboxes
+                const scorersList: Array<{ name?: string; type: string; sampleRate: number; guidelines?: string }> = [];
+
+                // Safety Scorer
+                const enableSafety = this.getNodeParameter('enableSafetyScorer', 0, false) as boolean;
+                if (enableSafety) {
+                    const sampleRate = this.getNodeParameter('safetySampleRate', 0, 100) as number;
+                    scorersList.push({
+                        name: 'safety_scorer',
+                        type: 'safety',
+                        sampleRate: sampleRate
+                    });
+                }
+
+                // Correctness Scorer
+                const enableCorrectness = this.getNodeParameter('enableCorrectnessScorer', 0, false) as boolean;
+                if (enableCorrectness) {
+                    const sampleRate = this.getNodeParameter('correctnessSampleRate', 0, 100) as number;
+                    scorersList.push({
+                        name: 'correctness_scorer',
+                        type: 'correctness',
+                        sampleRate: sampleRate
+                    });
+                }
+
+                // Relevance to Query Scorer
+                const enableRelevanceToQuery = this.getNodeParameter('enableRelevanceToQueryScorer', 0, false) as boolean;
+                if (enableRelevanceToQuery) {
+                    const sampleRate = this.getNodeParameter('relevanceToQuerySampleRate', 0, 100) as number;
+                    scorersList.push({
+                        name: 'relevance_to_query_scorer',
+                        type: 'relevance_to_query',
+                        sampleRate: sampleRate
+                    });
+                }
+
+                // Retrieval Groundedness Scorer
+                const enableRetrievalGroundedness = this.getNodeParameter('enableRetrievalGroundednessScorer', 0, false) as boolean;
+                if (enableRetrievalGroundedness) {
+                    const sampleRate = this.getNodeParameter('retrievalGroundednessSampleRate', 0, 100) as number;
+                    scorersList.push({
+                        name: 'retrieval_groundedness_scorer',
+                        type: 'retrieval_groundedness',
+                        sampleRate: sampleRate
+                    });
+                }
+
+                // Retrieval Relevance Scorer
+                const enableRetrievalRelevance = this.getNodeParameter('enableRetrievalRelevanceScorer', 0, false) as boolean;
+                if (enableRetrievalRelevance) {
+                    const sampleRate = this.getNodeParameter('retrievalRelevanceSampleRate', 0, 100) as number;
+                    scorersList.push({
+                        name: 'retrieval_relevance_scorer',
+                        type: 'retrieval_relevance',
+                        sampleRate: sampleRate
+                    });
+                }
+
+                // Retrieval Sufficiency Scorer
+                const enableRetrievalSufficiency = this.getNodeParameter('enableRetrievalSufficiencyScorer', 0, false) as boolean;
+                if (enableRetrievalSufficiency) {
+                    const sampleRate = this.getNodeParameter('retrievalSufficiencySampleRate', 0, 100) as number;
+                    scorersList.push({
+                        name: 'retrieval_sufficiency_scorer',
+                        type: 'retrieval_sufficiency',
+                        sampleRate: sampleRate
+                    });
+                }
+
+                // Guidelines Scorer
+                const enableGenericGuidelines = this.getNodeParameter('enableGenericGuidelinesScorer', 0, false) as boolean;
+                if (enableGenericGuidelines) {
+                    const sampleRate = this.getNodeParameter('genericGuidelinesSampleRate', 0, 100) as number;
+                    const guidelines = this.getNodeParameter('genericGuidelines', 0, '') as string;
+
+                    // Validate guidelines text
+                    if (!guidelines || guidelines.trim() === '') {
+                        throw new NodeOperationError(
+                            this.getNode(),
+                            'Guidelines scorer requires the "Guidelines Text" field to be filled with your evaluation criteria.'
+                        );
+                    }
+
+                    scorersList.push({
+                        name: 'guidelines_scorer',
+                        type: 'guidelines',
+                        sampleRate: sampleRate,
+                        guidelines: guidelines
+                    });
+                }
+
+                if (scorersList.length === 0) {
+                    this.logger.info('Quality monitoring enabled but no scorers configured');
+                } else {
+                    // Try to activate scorers via Python
+                    this.logger.info('Attempting to activate scorers via Python...');
+
+                    // Build MLflow config
+                    const mlflowConfig = {
+                        experimentName: experimentName,
+                        databricksHost: databricksHost,
+                        databricksToken: credentials.token as string,
+                    };
+
+                    // Build scorer configs with individual sample rates
+                    const scorerConfigs: ScorerConfig[] = scorersList.map((scorer) => ({
+                        experimentName: experimentName,
+                        databricksHost: databricksHost,
+                        databricksToken: credentials.token as string,
+                        name: scorer.name,
+                        scorerType: scorer.type,
+                        sampleRate: scorer.sampleRate / 100,
+                        guidelines: scorer.guidelines,
+                    }));
+
+                    const result = await activateScorers(mlflowConfig, scorerConfigs, this.logger);
+
+                    if (result.success) {
+                        this.logger.info('Scorers activated successfully:');
+                        scorersList.forEach((scorer) => {
+                            this.logger.info(`  - ${scorer.type}: ${scorer.sampleRate}% sample rate`);
+                        });
+
+                        // Log success metadata
+                        try {
+                            const tagEndpoint = `${databricksHost}/api/2.0/mlflow/experiments/set-experiment-tag`;
+                            const requestHeaders = {
+                                'Authorization': `Bearer ${credentials.token}`,
+                                'Content-Type': 'application/json',
+                            };
+
+                            await this.helpers.httpRequest({
+                                method: 'POST',
+                                url: tagEndpoint,
+                                headers: requestHeaders,
+                                body: {
+                                    experiment_id: experimentId,
+                                    key: 'monitoring.auto_activated',
+                                    value: 'true',
+                                },
+                            });
+                        } catch (tagError) {
+                            // Ignore tag errors
+                        }
+                    } else {
+                        this.logger.warn(`Failed to activate scorers: ${result.error}`);
+                        this.logger.info('Falling back to metadata-only approach');
+                    }
+
+                    // Always log monitoring preferences as experiment tags for reference
+                    try {
+                        const tagEndpoint = `${databricksHost}/api/2.0/mlflow/experiments/set-experiment-tag`;
+                        const requestHeaders = {
+                            'Authorization': `Bearer ${credentials.token}`,
+                            'Content-Type': 'application/json',
+                        };
+
+                        // Store scorer configuration as JSON metadata
+                        const scorersMetadata = scorersList.map((s) => ({
+                            type: s.type,
+                            sampleRate: s.sampleRate,
+                        }));
+
+                        await this.helpers.httpRequest({
+                            method: 'POST',
+                            url: tagEndpoint,
+                            headers: requestHeaders,
+                            body: {
+                                experiment_id: experimentId,
+                                key: 'monitoring.scorers_config',
+                                value: JSON.stringify(scorersMetadata),
+                            },
+                        });
+
+                        await this.helpers.httpRequest({
+                            method: 'POST',
+                            url: tagEndpoint,
+                            headers: requestHeaders,
+                            body: {
+                                experiment_id: experimentId,
+                                key: 'monitoring.enabled',
+                                value: 'true',
+                            },
+                        });
+
+                        this.logger.info('MLflow monitoring metadata saved');
+                    } catch (monitoringError: unknown) {
+                        const errorMsg = monitoringError instanceof Error ? monitoringError.message : String(monitoringError);
+                        this.logger.warn(`Failed to set monitoring metadata: ${maskTokensInText(errorMsg)}`);
+                        // Don't fail the execution, just log the warning
+                    }
+                }
+            }
+        } catch (error: unknown) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            throw new NodeOperationError(
+                this.getNode(),
+                `Failed to setup MLflow experiment: ${maskTokensInText(errorMessage)}`
+            );
+        }
+    }
 
     const returnData: INodeExecutionData[] = [];
     const items = this.getInputData();
-    const batchSize = this.getNodeParameter('options.batching.batchSize', 0, 1) as number;
-    const delayBetweenBatches = this.getNodeParameter(
+
+    if (!items || items.length === 0) {
+        return [returnData];
+    }
+
+    // Validate and sanitize batch parameters
+    const rawBatchSize = this.getNodeParameter('options.batching.batchSize', 0, 1) as number;
+
+    // Comprehensive batch size validation
+    let batchSize: number;
+    if (!Number.isFinite(rawBatchSize) || rawBatchSize < 1) {
+        this.logger.warn(`Invalid batch size ${rawBatchSize}, using default: 1`);
+        batchSize = 1;
+    } else if (rawBatchSize > items.length) {
+        this.logger.warn(`Batch size ${rawBatchSize} exceeds items count ${items.length}, using ${items.length}`);
+        batchSize = items.length;
+    } else {
+        batchSize = Math.floor(rawBatchSize);
+        if (batchSize !== rawBatchSize) {
+            this.logger.warn(`Non-integer batch size ${rawBatchSize}, rounded to ${batchSize}`);
+        }
+    }
+
+    // Validate delay with upper bound
+    const rawDelayBetweenBatches = this.getNodeParameter(
         'options.batching.delayBetweenBatches',
         0,
         0,
     ) as number;
+
+    let delayBetweenBatches: number;
+    if (!Number.isFinite(rawDelayBetweenBatches) || rawDelayBetweenBatches < 0) {
+        this.logger.warn(`Invalid delay ${rawDelayBetweenBatches}, using 0`);
+        delayBetweenBatches = 0;
+    } else if (rawDelayBetweenBatches > MLFLOW_CONSTANTS.MAX_DELAY_BETWEEN_BATCHES_MS) {
+        this.logger.warn(`Delay ${rawDelayBetweenBatches}ms exceeds maximum ${MLFLOW_CONSTANTS.MAX_DELAY_BETWEEN_BATCHES_MS}ms, capping to maximum`);
+        delayBetweenBatches = MLFLOW_CONSTANTS.MAX_DELAY_BETWEEN_BATCHES_MS;
+    } else {
+        delayBetweenBatches = Math.floor(rawDelayBetweenBatches);
+        if (delayBetweenBatches !== rawDelayBetweenBatches) {
+            this.logger.warn(`Non-integer delay ${rawDelayBetweenBatches}, rounded to ${delayBetweenBatches}`);
+        }
+    }
     const needsFallback = this.getNodeParameter('needsFallback', 0, false) as boolean;
     const memory = await getOptionalMemory(this);
     const model = await getChatModel(this, 0);
-    assert(model, 'Please connect a model to the Chat Model input');
+    assert(model, ERROR_MESSAGES.MODEL_NOT_CONNECTED);
     const fallbackModel = needsFallback ? await getChatModel(this, 1) : null;
 
     if (needsFallback && !fallbackModel) {
         throw new NodeOperationError(
             this.getNode(),
-            'Please connect a model to the Fallback Model input or disable the fallback option',
+            ERROR_MESSAGES.FALLBACK_MODEL_NOT_CONNECTED,
         );
     }
 
     // Check if streaming is enabled
     const enableStreaming = this.getNodeParameter('options.enableStreaming', 0, true) as boolean;
 
-    for (let i = 0; i < items.length; i += batchSize) {
+    // Track all handlers for cleanup
+    const mlflowHandlers: CallbackHandler[] = [];
+
+    try {
+        for (let i = 0; i < items.length; i += batchSize) {
+        // Check for cancellation before processing each batch
+        const cancelSignal = this.getExecutionCancelSignal();
+        if (cancelSignal?.aborted) {
+            const currentBatch = Math.floor(i / batchSize) + 1;
+            const totalBatches = Math.ceil(items.length / batchSize);
+            this.logger.info(`Execution cancelled at batch ${currentBatch}`);
+            throw new NodeOperationError(
+                this.getNode(),
+                ERROR_MESSAGES.EXECUTION_CANCELLED(currentBatch, totalBatches)
+            );
+        }
+
         const batch = items.slice(i, i + batchSize);
         const batchPromises = batch.map(async (_item, batchItemIndex) => {
             const itemIndex = i + batchItemIndex;
@@ -240,10 +677,13 @@ export async function toolsAgentExecute(
                 returnIntermediateSteps?: boolean;
                 passthroughBinaryImages?: boolean;
             };
-            // Define mlflow callback handler for tracing
+            // Define mlflow callback handler for tracing (only if MLflow is enabled)
+            const mlflowHandler = enableMLflow ? new CallbackHandler({}) : undefined;
 
-            const mlflowHandler = new CallbackHandler({
-            });
+            // Track handler for cleanup
+            if (mlflowHandler) {
+                mlflowHandlers.push(mlflowHandler);
+            }
 
             // Prepare the prompt messages and prompt template.
             const messages = await prepareMessages(this, itemIndex, {
@@ -265,15 +705,19 @@ export async function toolsAgentExecute(
                 mlflowHandler
             );
             // Invoke with fallback logic
-            const invokeParams = {
+            const invokeParams: any = {
                 input,
                 system_message: options.systemMessage ?? SYSTEM_MESSAGE,
-                formatting_instructions:
-                    'IMPORTANT: For your response to user, you MUST use the `format_final_json_response` tool with your complete answer formatted according to the required schema. Do not attempt to format the JSON manually - always use this tool. Your response will be rejected if it is not properly formatted through this tool. Only use this tool once you are ready to provide your final answer.',
             };
+
+            // Only include formatting_instructions if outputParser is present
+            if (outputParser) {
+                invokeParams.formatting_instructions =
+                    'IMPORTANT: For your response to user, you MUST use the `format_final_json_response` tool with your complete answer formatted according to the required schema. Do not attempt to format the JSON manually - always use this tool. Your response will be rejected if it is not properly formatted through this tool. Only use this tool once you are ready to provide your final answer.';
+            }
             const executeOptions = {
                 signal: this.getExecutionCancelSignal(),
-                callbacks: [mlflowHandler]
+                callbacks: mlflowHandler ? [mlflowHandler] : []
             };
 
             // Check if streaming is actually available
@@ -297,34 +741,15 @@ export async function toolsAgentExecute(
                     },
                 );
                 
-                const tracedProcessEventStream = mlflow.trace(processEventStream,
-
-                    {name: "agent_with_tools",
-                        spanType: mlflow.SpanType.CHAIN
-                    }
+                return await processEventStream(
+                        this,
+                        eventStream,
+                        itemIndex,
+                        options.returnIntermediateSteps,
                 );
-
-                return await tracedProcessEventStream(
-                    this,
-                    eventStream,
-                    itemIndex,
-                    options.returnIntermediateSteps,
-                );
+                
             } else {
-                
-                
-                // // Trace any function with a decorator
-                // const tracedInvoke = mlflow.trace(executor.invoke,
-                //     {
-                //     name: "agent_with_tools",
-                //     spanType: mlflow.SpanType.CHAIN,
-                //     },
-                // );
-
-                // // Handle regular execution
-                // return await tracedInvoke(invokeParams, executeOptions)
-
-                return await executor.invoke(invokeParams, executeOptions)
+                return await executor.invoke(invokeParams, executeOptions); 
             }
         });
 
@@ -336,14 +761,20 @@ export async function toolsAgentExecute(
             const itemIndex = i + index;
             if (result.status === 'rejected') {
                 const error = result.reason as Error;
+                // Security: Mask tokens in error messages
+                const maskedMessage = maskTokensInText(error.message);
+                const maskedStack = error.stack ? maskTokensInText(error.stack) : undefined;
+
                 if (this.continueOnFail()) {
                     returnData.push({
-                        json: { error: error.message },
+                        json: { error: maskedMessage, stack: maskedStack },
                         pairedItem: { item: itemIndex },
                     });
                     return;
                 } else {
-                    throw new NodeOperationError(this.getNode(), error);
+                    // Add more context to the error
+                    const enhancedError = new Error(`Agent execution failed: ${maskedMessage}\n\nOriginal stack:\n${maskedStack || 'N/A'}`);
+                    throw new NodeOperationError(this.getNode(), enhancedError);
                 }
             }
             const response = result.value;
@@ -374,7 +805,23 @@ export async function toolsAgentExecute(
         if (i + batchSize < items.length && delayBetweenBatches > 0) {
             await sleep(delayBetweenBatches);
         }
-    }
+        }
 
-    return [returnData];
+        return [returnData];
+    } finally {
+        // Wait for all pending operations to complete before cleanup
+        await Promise.allSettled(
+            mlflowHandlers.map(async (handler) => {
+                try {
+                    // Give some time for any pending span operations to complete
+                    await new Promise(resolve => setTimeout(resolve, MLFLOW_CONSTANTS.SPAN_CLEANUP_DELAY_MS));
+                    handler.cleanup();
+                } catch (cleanupError: unknown) {
+                    const errorMsg = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+                    // Security: Mask any tokens in cleanup errors
+                    this.logger.debug(`Error cleaning up MLflow handler: ${maskTokensInText(errorMsg)}`);
+                }
+            })
+        );
+    }
 }

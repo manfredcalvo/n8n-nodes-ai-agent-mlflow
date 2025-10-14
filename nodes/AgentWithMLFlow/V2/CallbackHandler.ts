@@ -6,11 +6,6 @@ import {
   AIMessage,
   AIMessageChunk,
   BaseMessage,
-  // ChatMessage,
-  // FunctionMessage,
-  // HumanMessage,
-  // SystemMessage,
-  // ToolMessage,
   type UsageMetadata,
   type BaseMessageFields,
 } from "@langchain/core/messages";
@@ -18,12 +13,6 @@ import type { Generation, LLMResult } from "@langchain/core/outputs";
 import type { ChainValues } from "@langchain/core/utils/types";
 import { getLogger } from "log4js";
 import * as mlflow from "mlflow-tracing";
-
-type LangfusePrompt = {
-  name: string;
-  version: number;
-  isFallback: boolean;
-};
 
 export type LlmMessage = {
   role: string;
@@ -36,6 +25,28 @@ export type AnonymousLlmMessage = {
   additional_kwargs?: BaseMessageFields["additional_kwargs"];
 };
 
+type ErrorLike = Error | { message: string; stack?: string; [key: string]: unknown };
+
+interface ModelParameters {
+  temperature?: number;
+  max_tokens?: number;
+  top_p?: number;
+  frequency_penalty?: number;
+  presence_penalty?: number;
+  request_timeout?: number;
+}
+
+interface GenerationWithMetadata {
+  message?: {
+    response_metadata?: {
+      model_name?: string;
+    };
+    usage_metadata?: UsageMetadata;
+  };
+}
+
+type LLMTokenIndex = import("@langchain/core/dist/callbacks/base").NewTokenIndices;
+
 type ConstructorParams = {
   userId?: string;
   sessionId?: string;
@@ -46,27 +57,82 @@ type ConstructorParams = {
 
 export class CallbackHandler extends BaseCallbackHandler {
   name = "MLFlowCallbackHandler";
-  private promptToParentRunMap;
-  private runMap: Map<string, mlflow.LiveSpan> = new Map();
+  private readonly runMap: Map<string, mlflow.LiveSpan> = new Map();
+  private readonly maxMapSize = 1000; // Safety limit to prevent memory leaks
 
-  public last_trace_id: string | null = null;
+  private _lastTraceId: string | null = null;
+
+  public get lastTraceId(): string | null {
+    return this._lastTraceId;
+  }
 
   constructor(params?: ConstructorParams) {
     super();
-    this.promptToParentRunMap = new Map<string, LangfusePrompt>();
   }
 
   get logger() {
     return getLogger("Callback-handler");
   }
 
+  /**
+   * Helper method to log errors consistently
+   */
+  private logError(context: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    this.logger.debug(`${context}: ${message}`);
+  }
+
+  /**
+   * Ensures the runMap doesn't grow unbounded to prevent memory leaks
+   */
+  private ensureMapSize(): void {
+    if (this.runMap.size <= this.maxMapSize) return;
+
+    this.logger.warn(
+      `runMap size (${this.runMap.size}) exceeded limit (${this.maxMapSize}). ` +
+      'Cleaning up oldest entries. This may indicate spans not being properly closed.'
+    );
+
+    const entries = Array.from(this.runMap.entries());
+    const toDelete = entries.slice(0, entries.length - this.maxMapSize);
+
+    for (const [key, span] of toDelete) {
+      try {
+        span.end();
+        this.logger.debug(`Force-closed orphaned span: ${key}`);
+      } catch (e) {
+        this.logError(`Failed to close orphaned span ${key}`, e);
+      }
+      this.runMap.delete(key);
+    }
+  }
+
+  /**
+   * Cleans up all remaining spans. Should be called when handler is no longer needed.
+   */
+  public cleanup(): void {
+    if (this.runMap.size === 0) return;
+
+    this.logger.debug(`Cleaning up ${this.runMap.size} remaining spans`);
+
+    for (const [runId, span] of this.runMap.entries()) {
+      try {
+        span.end();
+      } catch (e) {
+        this.logError(`Failed to end span ${runId} during cleanup`, e);
+      }
+    }
+
+    this.runMap.clear();
+  }
+
   async handleLLMNewToken(
     token: string,
-    _idx: any,
+    _idx: LLMTokenIndex,
     runId: string,
     _parentRunId?: string,
     _tags?: string[],
-    _fields?: any,
+    _fields?: Record<string, unknown>,
   ): Promise<void> {
     // if this is the first token, add it to completionStartTimes
     this.logger.info(`LLM returning token: ${token}`);
@@ -90,20 +156,12 @@ export class CallbackHandler extends BaseCallbackHandler {
 
       const filter_chains = ["runnablelambda", "runnablemap", "toolcallingagentoutputparser"]
 
-      const filter_span = filter_chains.some(sub => runName.toLowerCase().includes(sub))
+      const filter_span = runName ? filter_chains.some(sub => runName.toLowerCase().includes(sub)) : false
 
       if(filter_span){
-          // const parentSpan = parentRunId &&  this.runMap.has(parentRunId)
-          //     ? this.runMap.get(parentRunId)
-          //     : undefined
-
-          // if(parentSpan){
-          //   this.runMap.set(runId, parentSpan)
-          // }
+        // Skip tracing for internal LangChain utility chains
         return;
       }
-
-      this.registerLangfusePrompt(parentRunId, metadata);
 
       let chat_history = 'chat_history' in inputs ? inputs['chat_history']: undefined
 
@@ -139,16 +197,8 @@ export class CallbackHandler extends BaseCallbackHandler {
   ): Promise<void> {
     try {
       this.logger.debug(`Agent action ${action.tool} with ID: ${runId}`);
-      
-      // this.startAndRegisterOtelSpan({
-      //   type: mlflow.SpanType.AGENT,
-      //   runName: action.tool,
-      //   runId,
-      //   parentRunId,
-      //   attributes: {
-      //     input: action,
-      //   },
-      // });
+
+      // Note: Agent action tracing is handled by handleChainStart to avoid duplicate spans in MLflow
 
     } catch (e) {
       this.logger.debug(e instanceof Error ? e.message : String(e));
@@ -158,29 +208,25 @@ export class CallbackHandler extends BaseCallbackHandler {
   async handleAgentEnd?(
     action: AgentFinish,
     runId: string,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     parentRunId?: string,
   ): Promise<void> {
     try {
       this.logger.debug(`Agent finish with ID: ${runId}`);
 
-      // this.handleOtelSpanEnd({
-      //   runId,
-      //   attributes: { output: action },
-      // });
+      // Note: Agent end tracing is handled by handleChainEnd to avoid duplicate spans in MLflow
     } catch (e) {
       this.logger.debug(e instanceof Error ? e.message : String(e));
     }
   }
 
   async handleChainError(
-    err: any,
+    err: ErrorLike,
     runId: string,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     parentRunId?: string | undefined,
   ): Promise<void> {
     try {
-      this.logger.debug(`Chain error: ${err} with ID: ${runId}`);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      this.logger.debug(`Chain error: ${errorMessage} with ID: ${runId}`);
 
       const azureRefusalError = this.parseAzureRefusalError(err);
 
@@ -188,17 +234,17 @@ export class CallbackHandler extends BaseCallbackHandler {
         runId,
         attributes: {
           level: "ERROR",
-          statusMessage: err.toString() + azureRefusalError,
+          statusMessage: errorMessage + azureRefusalError,
         },
       });
     } catch (e) {
-      this.logger.debug(e instanceof Error ? e.message : String(e));
+      this.logError('handleChainError', e);
     }
   }
 
   async handleGenerationStart(
     llm: Serialized,
-    messages: Record<string, any>,
+    messages: Record<string, unknown> | Record<string, unknown>[] | string[],
     runId: string,
     parentRunId?: string | undefined,
     extraParams?: Record<string, unknown> | undefined,
@@ -212,27 +258,25 @@ export class CallbackHandler extends BaseCallbackHandler {
 
     const runName = name ?? llm.id.at(-1)?.toString() ?? "Langchain Generation";
 
-    const modelParameters: Record<string, any> = {};
-    const invocationParams = extraParams?.["invocation_params"];
+    const modelParameters: ModelParameters = {};
+    const invocationParams = extraParams?.["invocation_params"] as Record<string, unknown> | undefined;
 
-    for (const [key, value] of Object.entries({
-      temperature: (invocationParams as any)?.temperature,
-      max_tokens: (invocationParams as any)?.max_tokens,
-      top_p: (invocationParams as any)?.top_p,
-      frequency_penalty: (invocationParams as any)?.frequency_penalty,
-      presence_penalty: (invocationParams as any)?.presence_penalty,
-      request_timeout: (invocationParams as any)?.request_timeout,
-    })) {
-      if (value !== undefined && value !== null) {
-        modelParameters[key] = value;
+    if (invocationParams) {
+      const paramKeys: Array<keyof ModelParameters> = [
+        'temperature',
+        'max_tokens',
+        'top_p',
+        'frequency_penalty',
+        'presence_penalty',
+        'request_timeout'
+      ];
+
+      for (const key of paramKeys) {
+        const value = invocationParams[key];
+        if (value !== undefined && value !== null && typeof value === 'number') {
+          modelParameters[key] = value;
+        }
       }
-    }
-
-    const registeredPrompt = this.promptToParentRunMap.get(
-      parentRunId ?? "root",
-    );
-    if (registeredPrompt && parentRunId) {
-      this.deregisterLangfusePrompt(parentRunId);
     }
 
     this.startAndRegisterOtelSpan({
@@ -284,7 +328,6 @@ export class CallbackHandler extends BaseCallbackHandler {
   async handleChainEnd(
     outputs: ChainValues,
     runId: string,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     parentRunId?: string | undefined,
   ): Promise<void> {
     try {
@@ -305,7 +348,6 @@ export class CallbackHandler extends BaseCallbackHandler {
           output: finalOutput,
         },
       });
-      this.deregisterLangfusePrompt(runId);
     } catch (e) {
       this.logger.debug(e instanceof Error ? e.message : String(e));
     }
@@ -401,7 +443,6 @@ export class CallbackHandler extends BaseCallbackHandler {
   async handleRetrieverEnd(
     documents: Document<Record<string, any>>[],
     runId: string,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     parentRunId?: string | undefined,
   ): Promise<void> {
     try {
@@ -419,28 +460,27 @@ export class CallbackHandler extends BaseCallbackHandler {
   }
 
   async handleRetrieverError(
-    err: any,
+    err: ErrorLike,
     runId: string,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     parentRunId?: string | undefined,
   ): Promise<void> {
     try {
-      this.logger.debug(`Retriever error: ${err} with ID: ${runId}`);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      this.logger.debug(`Retriever error: ${errorMessage} with ID: ${runId}`);
       this.handleOtelSpanEnd({
         runId,
         attributes: {
           level: "ERROR",
-          statusMessage: err.toString(),
+          statusMessage: errorMessage,
         },
       });
     } catch (e) {
-      this.logger.debug(e instanceof Error ? e.message : String(e));
+      this.logError('handleRetrieverError', e);
     }
   }
   async handleToolEnd(
     output: string,
     runId: string,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     parentRunId?: string | undefined,
   ): Promise<void> {
     try {
@@ -456,30 +496,29 @@ export class CallbackHandler extends BaseCallbackHandler {
   }
 
   async handleToolError(
-    err: any,
+    err: ErrorLike,
     runId: string,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     parentRunId?: string | undefined,
   ): Promise<void> {
     try {
-      this.logger.debug(`Tool error ${err} with ID: ${runId}`);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      this.logger.debug(`Tool error ${errorMessage} with ID: ${runId}`);
 
       this.handleOtelSpanEnd({
         runId,
         attributes: {
           level: "ERROR",
-          statusMessage: err.toString(),
+          statusMessage: errorMessage,
         },
       });
     } catch (e) {
-      this.logger.debug(e instanceof Error ? e.message : String(e));
+      this.logError('handleToolError', e);
     }
   }
 
   async handleLLMEnd(
     output: LLMResult,
     runId: string,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     parentRunId?: string | undefined,
   ): Promise<void> {
     try {
@@ -492,9 +531,9 @@ export class CallbackHandler extends BaseCallbackHandler {
       const llmUsage =
         this.extractUsageMetadata(lastResponse) ??
         output.llmOutput?.["tokenUsage"];
-      const modelName = this.extractModelNameFromMetadata(lastResponse);
+      const modelName = this.extractModelNameFromMetadata(lastResponse as unknown as GenerationWithMetadata);
 
-      const usageDetails: Record<string, any> = {
+      const usageDetails: Record<string, number | undefined> = {
         input_tokens:
           llmUsage?.input_tokens ??
           ("promptTokens" in llmUsage ? llmUsage?.promptTokens : undefined),
@@ -512,10 +551,13 @@ export class CallbackHandler extends BaseCallbackHandler {
         for (const [key, val] of Object.entries(
           llmUsage["input_token_details"] ?? {},
         )) {
-          usageDetails[`input_${key}`] = val;
+          if (typeof val === "number") {
+            usageDetails[`input_${key}`] = val;
 
-          if ("input" in usageDetails && typeof val === "number") {
-            usageDetails["input"] = Math.max(0, usageDetails["input"] - val);
+            const inputTokens = usageDetails["input_tokens"];
+            if (typeof inputTokens === "number") {
+              usageDetails["input_tokens"] = Math.max(0, inputTokens - val);
+            }
           }
         }
       }
@@ -524,10 +566,13 @@ export class CallbackHandler extends BaseCallbackHandler {
         for (const [key, val] of Object.entries(
           llmUsage["output_token_details"] ?? {},
         )) {
-          usageDetails[`output_${key}`] = val;
+          if (typeof val === "number") {
+            usageDetails[`output_${key}`] = val;
 
-          if ("output" in usageDetails && typeof val === "number") {
-            usageDetails["output"] = Math.max(0, usageDetails["output"] - val);
+            const outputTokens = usageDetails["output_tokens"];
+            if (typeof outputTokens === "number") {
+              usageDetails["output_tokens"] = Math.max(0, outputTokens - val);
+            }
           }
         }
       }
@@ -535,31 +580,31 @@ export class CallbackHandler extends BaseCallbackHandler {
 
       //let llm_response = {"role": "assistant", "content": lastResponse.text}
 
-      let val: any = lastResponse
-      
-      const llmResponse = this.extractChatMessageContent(val["message"])
+      const val = lastResponse as Generation & { message?: BaseMessage };
+
+      const llmResponse = val.message ? this.extractChatMessageContent(val.message) : undefined;
 
       this.handleOtelSpanEnd({
         runId,
         attributes: {
-          messages: [llmResponse],
+          messages: llmResponse ? [llmResponse] : [],
           model: modelName,
           usageDetails: usageDetails,
         },
       });
     } catch (e) {
-      this.logger.debug(e instanceof Error ? e.message : String(e));
+      this.logError('handleLLMEnd', e);
     }
   }
 
   async handleLLMError(
-    err: any,
+    err: ErrorLike,
     runId: string,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     parentRunId?: string | undefined,
   ): Promise<void> {
     try {
-      this.logger.debug(`LLM error ${err} with ID: ${runId}`);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      this.logger.debug(`LLM error ${errorMessage} with ID: ${runId}`);
 
       // Azure has the refusal status for harmful messages in the error property
       // This would not be logged as the error message is only a generic message
@@ -570,35 +615,12 @@ export class CallbackHandler extends BaseCallbackHandler {
         runId,
         attributes: {
           level: "ERROR",
-          statusMessage: err.toString() + azureRefusalError,
+          statusMessage: errorMessage + azureRefusalError,
         },
       });
     } catch (e) {
-      this.logger.debug(e instanceof Error ? e.message : String(e));
+      this.logError('handleLLMError', e);
     }
-  }
-
-  private registerLangfusePrompt(
-    parentRunId?: string,
-    metadata?: Record<string, unknown>,
-  ): void {
-    /*
-    Register a prompt for linking to a generation with the same parentRunId.
-
-    `parentRunId` must exist when we want to do any prompt linking to a generation. If it does not exist, it means the execution is solely a Prompt template formatting without any following LLM invocation, so no generation will be created to link to.
-    For the simplest chain, a parent run is always created to wrap the individual runs consisting of prompt template formatting and LLM invocation.
-    So, we do not need to register any prompt for linking if parentRunId is missing.
-    */
-    if (metadata && "langfusePrompt" in metadata && parentRunId) {
-      this.promptToParentRunMap.set(
-        parentRunId,
-        metadata.langfusePrompt as LangfusePrompt,
-      );
-    }
-  }
-
-  private deregisterLangfusePrompt(runId: string): void {
-    this.promptToParentRunMap.delete(runId);
   }
 
   private startAndRegisterOtelSpan(params: {
@@ -613,15 +635,24 @@ export class CallbackHandler extends BaseCallbackHandler {
     const { type, runName, runId, parentRunId, attributes, metadata, tags } =
       params;
 
+    // Ensure map doesn't grow unbounded
+    this.ensureMapSize();
+
     const parentSpan = parentRunId &&  this.runMap.has(parentRunId)
               ? this.runMap.get(parentRunId)
               : undefined
 
-    const span = mlflow.startSpan({name: runName, spanType: type, inputs:{
-      ...attributes,
-      metadata: this.joinTagsAndMetaData(tags, metadata)    
-    },
-    parent: parentSpan
+    const joinedMetadata = this.joinTagsAndMetaData(tags, metadata);
+    const inputs: Record<string, unknown> = { ...attributes };
+    if (joinedMetadata !== undefined) {
+      inputs.metadata = joinedMetadata;
+    }
+
+    const span = mlflow.startSpan({
+      name: runName,
+      spanType: type,
+      inputs,
+      parent: parentSpan
     });
 
     if(parentRunId){
@@ -651,12 +682,13 @@ export class CallbackHandler extends BaseCallbackHandler {
     span.setStatus(mlflow.SpanStatusCode.OK)
 
     span.end()
-    
-    this.last_trace_id = span.traceId;
-    
+
+    this._lastTraceId = span.traceId;
+
     this.runMap.delete(runId);
   }
-  private parseAzureRefusalError(err: any): string {
+
+  private parseAzureRefusalError(err: ErrorLike): string {
     // Azure has the refusal status for harmful messages in the error property
     // This would not be logged as the error message is only a generic message
     // that there has been a refusal
@@ -665,7 +697,10 @@ export class CallbackHandler extends BaseCallbackHandler {
       try {
         azureRefusalError =
           "\n\nError details:\n" + JSON.stringify(err["error"], null, 2);
-      } catch {}
+      } catch (serializationError) {
+        this.logger.debug(`Failed to serialize Azure error: ${serializationError}`);
+        azureRefusalError = "\n\nError details: [Unable to serialize error object]";
+      }
     }
 
     return azureRefusalError;
@@ -686,27 +721,7 @@ export class CallbackHandler extends BaseCallbackHandler {
     if (metadata2) {
       Object.assign(finalDict, metadata2);
     }
-    return this.stripLangfuseKeysFromMetadata(finalDict);
-  }
-
-  private stripLangfuseKeysFromMetadata(
-    metadata?: Record<string, unknown>,
-  ): Record<string, unknown> | undefined {
-    if (!metadata) {
-      return;
-    }
-
-    const langfuseKeys = [
-      "langfusePrompt",
-      "langfuseUserId",
-      "langfuseSessionId",
-    ];
-
-    return Object.fromEntries(
-      Object.entries(metadata).filter(
-        ([key, _]) => !langfuseKeys.includes(key),
-      ),
-    );
+    return Object.keys(finalDict).length > 0 ? finalDict : undefined;
   }
 
   /** Not all models supports tokenUsage in llmOutput, can use AIMessage.usage_metadata instead */
@@ -729,13 +744,13 @@ export class CallbackHandler extends BaseCallbackHandler {
     }
   }
 
-  private extractModelNameFromMetadata(generation: any): string | undefined {
+  private extractModelNameFromMetadata(generation: GenerationWithMetadata): string | undefined {
     try {
-      return "message" in generation 
-        ? generation["message"].response_metadata.model_name
-        : undefined;
-    } catch {}
-    return undefined
+      return generation.message?.response_metadata?.model_name;
+    } catch (error) {
+      this.logError('extractModelNameFromMetadata', error);
+      return undefined;
+    }
   }
 
   private extractChatMessageContent(

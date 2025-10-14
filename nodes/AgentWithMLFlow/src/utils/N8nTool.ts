@@ -6,8 +6,6 @@ import { jsonParse, NodeOperationError } from 'n8n-workflow';
 import type { ZodTypeAny } from 'zod';
 import { ZodBoolean, ZodNullable, ZodNumber, ZodObject, ZodOptional } from 'zod';
 
-// import type { ZodObjectAny } from '../types/types';
-
 const getSimplifiedType = (schema: ZodTypeAny) => {
     if (schema instanceof ZodObject) {
         return 'object';
@@ -79,9 +77,10 @@ export class N8nTool extends DynamicStructuredTool<any> {
                         dataFromModel = { [parameterName]: query };
                     } else {
                         // Finally throw an error if we were unable to parse the query
+                        const errorMessage = error instanceof Error ? error.message : String(error);
                         throw new NodeOperationError(
                             context.getNode(),
-                            `Input is not a valid JSON: ${error.message}`,
+                            `Input is not a valid JSON: ${errorMessage}`,
                         );
                     }
                 }
@@ -96,11 +95,14 @@ export class N8nTool extends DynamicStructuredTool<any> {
                 const result = await func(parsedQuery);
 
                 return result;
-            } catch (e) {
+            } catch (e: unknown) {
                 const { index } = context.addInputData('ai_tool', [[{ json: { query } }]]);
-                void context.addOutputData('ai_tool', index, e);
 
-                return e.toString();
+                // Convert error to proper format for output
+                const errorData = e instanceof Error ? [[{ json: { error: e.message, stack: e.stack } }]] : [[{ json: { error: String(e) } }]];
+                void context.addOutputData('ai_tool', index, errorData);
+
+                return e instanceof Error ? e.message : String(e);
             }
         };
 

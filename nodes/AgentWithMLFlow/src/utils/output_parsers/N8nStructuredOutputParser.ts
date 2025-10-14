@@ -81,13 +81,14 @@ export class N8nStructuredOutputParser extends StructuredOutputParser<any> {
 					'Model output does not match the expected schema';
 			}
 
+			const errorMessage = e instanceof Error ? e.message : String(e);
 			logAiEvent(this.context, 'ai-output-parsed', {
 				text,
-				response: e.message ?? e,
+				response: errorMessage,
 			});
 
 			this.context.addOutputData(NodeConnectionTypes.AiOutputParser, index, nodeError);
-			if (errorMapper) {
+			if (errorMapper && e instanceof Error) {
 				throw errorMapper(e);
 			}
 
