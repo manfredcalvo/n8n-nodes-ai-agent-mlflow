@@ -1,13 +1,17 @@
 import json
 import os
 import argparse
+import logging
 
 import mlflow
 from mlflow.genai.scorers import ScorerSamplingConfig, delete_scorer, list_scorers
 from mlflow.genai.scorers import Safety, Correctness, RelevanceToQuery, RetrievalGroundedness, RetrievalRelevance, RetrievalSufficiency, Guidelines
 
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
 input_example_data = {
-    "experiment_name": "my_experiment",
+    "experiment_name": "/Users/manffred.calvosanchez@databricks.com/n8n-experiment-tracing",
     "scorers":[
         {"name": "my_safety",
         "scorer_type": "Safety",
@@ -43,7 +47,7 @@ def create_or_update_scorers(experiment_name, scorers_config):
     mlflow.set_tracking_uri('databricks')
     mlflow.set_experiment(experiment_name)
 
-    print(f"MLflow configured for experiment: {experiment_name}")
+    logger.info(f"MLflow configured for experiment: {experiment_name}")
 
     config_scorer_names = set(scorer["name"] for scorer in scorers_config)
 
@@ -71,9 +75,11 @@ def create_or_update_scorers(experiment_name, scorers_config):
         sample_rate = scorer_config['sample_rate']
         scorer_name = scorer_config['name']
         if scorer_name in actual_scorers:
+            logger.info(f"Updating scorer: {scorer_name}")
             actual_scorer = actual_scorers[scorer_name]
             actual_scorer.update(sampling_config=ScorerSamplingConfig(sample_rate=sample_rate))
         else:
+            logger.info(f"Creating scorer: {scorer_name}")
             scorer_type = scorer_config['scorer_type']
             scorer_cls = get_class_by_name(scorer_type)
             args = {"name": scorer_name}
@@ -89,11 +95,12 @@ def create_or_update_scorers(experiment_name, scorers_config):
 def get_parser():
     parser = argparse.ArgumentParser(description="Script to create or update scorers of a genai mlflow experiment.")
     parser.add_argument("--creation_config", help="JSON specification of the scorers config and mlflow experiment.")
+    return parser
 
 if __name__ == "__main__":
     assert all(env_variable in os.environ for env_variable in ["DATABRICKS_HOST", "DATABRICKS_TOKEN"]), "You need to set DATABRICKS_HOST and DATABRICKS_TOKEN environment variables before running this script."
 
-    parser= get_parser()
+    parser = get_parser()
     
     args = parser.parse_args()
 
