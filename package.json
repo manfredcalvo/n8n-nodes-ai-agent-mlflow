@@ -29,8 +29,7 @@
     "prepublishOnly": "npm run build"
   },
   "files": [
-    "dist",
-    "create_scorers.py"
+    "dist"
   ],
   "n8n": {
     "n8nNodesApiVersion": 1,
