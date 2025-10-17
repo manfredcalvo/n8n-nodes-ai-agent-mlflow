@@ -106,8 +106,8 @@ export class N8nStructuredOutputParser extends StructuredOutputParser<any> {
 			returnSchema = z.object({
 				[STRUCTURED_OUTPUT_KEY]: z
 					.object({
-						[STRUCTURED_OUTPUT_OBJECT_KEY]: zodSchema.optional(),
-						[STRUCTURED_OUTPUT_ARRAY_KEY]: z.array(zodSchema).optional(),
+						[STRUCTURED_OUTPUT_OBJECT_KEY]: zodSchema.optional().nullable(),
+						[STRUCTURED_OUTPUT_ARRAY_KEY]: z.array(zodSchema).optional().nullable(),
 					})
 					.describe(
 						`Wrapper around the output data. It can only contain ${STRUCTURED_OUTPUT_OBJECT_KEY} or ${STRUCTURED_OUTPUT_ARRAY_KEY} but never both.`,
@@ -129,7 +129,7 @@ export class N8nStructuredOutputParser extends StructuredOutputParser<any> {
 			});
 		} else if (nodeVersion < 1.3) {
 			returnSchema = z.object({
-				output: zodSchema.optional(),
+				output: zodSchema.optional().nullable(),
 			});
 		} else {
 			returnSchema = z.object({

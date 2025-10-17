@@ -470,8 +470,6 @@ export async function toolsAgentExecute(
                 if (scorersList.length === 0) {
                     this.logger.info('Quality monitoring enabled but no scorers configured');
                 } else {
-                    // Try to activate scorers via Python
-                    this.logger.info('Attempting to activate scorers via Python...');
 
                     // Build MLflow config
                     const mlflowConfig = {
@@ -494,10 +492,6 @@ export async function toolsAgentExecute(
                     const result = await activateScorers(mlflowConfig, scorerConfigs, this.logger);
 
                     if (result.success) {
-                        this.logger.info('Scorers activated successfully:');
-                        scorersList.forEach((scorer) => {
-                            this.logger.info(`  - ${scorer.type}: ${scorer.sampleRate}% sample rate`);
-                        });
 
                         // Log success metadata
                         try {
@@ -561,7 +555,6 @@ export async function toolsAgentExecute(
                             },
                         });
 
-                        this.logger.info('MLflow monitoring metadata saved');
                     } catch (monitoringError: unknown) {
                         const errorMsg = monitoringError instanceof Error ? monitoringError.message : String(monitoringError);
                         this.logger.warn(`Failed to set monitoring metadata: ${maskTokensInText(errorMsg)}`);

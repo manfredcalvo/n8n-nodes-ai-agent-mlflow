@@ -111,7 +111,6 @@ export async function activateScorers(
 
         python.on('close', (code) => {
             if (code === 0) {
-                logger?.info('Scorers activated successfully via Python');
                 resolve({
                     success: true,
                     output: stdout.trim(),

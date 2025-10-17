@@ -8,7 +8,7 @@ from mlflow.genai.scorers import ScorerSamplingConfig, delete_scorer, list_score
 from mlflow.genai.scorers import Safety, Correctness, RelevanceToQuery, RetrievalGroundedness, RetrievalRelevance, RetrievalSufficiency, Guidelines
 
 logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.ERROR)
 
 input_example_data = {
     "experiment_name": "/Users/manffred.calvosanchez@databricks.com/n8n-experiment-tracing",
@@ -46,8 +46,6 @@ def create_or_update_scorers(experiment_name, scorers_config):
     mlflow.set_tracking_uri('databricks')
     mlflow.set_experiment(experiment_name)
 
-    logger.info(f"MLflow configured for experiment: {experiment_name}")
-
     config_scorer_names = set(scorer["name"] for scorer in scorers_config)
     actual_scorers = dict()
 
@@ -74,11 +72,9 @@ def create_or_update_scorers(experiment_name, scorers_config):
         scorer_type = scorer_config['scorer_type']
 
         if scorer_name in actual_scorers:
-            logger.info(f"Updating scorer: {scorer_name}")
             actual_scorer = actual_scorers[scorer_name]
             actual_scorer.update(sampling_config=ScorerSamplingConfig(sample_rate=sample_rate))
         else:
-            logger.info(f"Creating scorer: {scorer_name}")
             scorer_type = scorer_config['scorer_type']
             scorer_cls = get_class_by_name(scorer_type)
             args = {"name": scorer_name}
