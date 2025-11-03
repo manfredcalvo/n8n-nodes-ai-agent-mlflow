@@ -39,7 +39,7 @@ import { SYSTEM_MESSAGE } from '../src/utils/prompt';
 import { MLFLOW_CONSTANTS, ERROR_MESSAGES } from '../src/constants';
 import { maskTokensInText } from '../src/utils/retry';
 import {
-    validateDatabricksHost,
+    validateAndCleanDatabricksCredentials,
 } from '../src/utils/security';
 
 // MLflow will be initialized dynamically per execution based on credentials
@@ -249,132 +249,32 @@ export async function toolsAgentExecute(
     const enableMLflow = this.getNodeParameter('enableMLflow', 0, false) as boolean;
 
     if (enableMLflow) {
-        // Get Databricks credentials
+        // Get and validate Databricks credentials
         const credentials = await this.getCredentials('databricks');
 
-        if (!credentials) {
-            throw new NodeOperationError(
-                this.getNode(),
-                ERROR_MESSAGES.MISSING_CREDENTIALS,
-            );
-        }
-
-        // Validate credentials have required fields
-        if (!credentials.host || typeof credentials.host !== 'string' || credentials.host.trim() === '') {
-            throw new NodeOperationError(
-                this.getNode(),
-                ERROR_MESSAGES.EMPTY_HOST,
-            );
-        }
-
-        if (!credentials.token || typeof credentials.token !== 'string' || credentials.token.trim() === '') {
-            throw new NodeOperationError(
-                this.getNode(),
-                ERROR_MESSAGES.EMPTY_TOKEN,
-            );
-        }
-
-        // Warn if token looks suspiciously short
-        const token = credentials.token as string;
-        if (token.length < MLFLOW_CONSTANTS.MIN_DATABRICKS_TOKEN_LENGTH) {
-            this.logger.warn(ERROR_MESSAGES.SHORT_TOKEN_WARNING(token.length));
-        }
-
-        // Validate and clean Databricks host URL with security checks
-        const rawHost = credentials.host as string;
         let databricksHost: string;
+        let token: string;
+
         try {
-            const cleanedHost = rawHost.trim().replace(/\/$/, '');
-
-            // Handle case where user didn't include protocol
-            const hostWithProtocol = cleanedHost.startsWith('http')
-                ? cleanedHost
-                : `https://${cleanedHost}`;
-
-            // Security validation: Check for SSRF and invalid hosts
-            const hostValidation = validateDatabricksHost(hostWithProtocol);
-            if (!hostValidation.isValid) {
-                throw new Error(hostValidation.error);
-            }
-
-            const url = new URL(hostWithProtocol);
-
-            // Warn if using HTTP instead of HTTPS
-            if (url.protocol === 'http:') {
-                this.logger.warn(ERROR_MESSAGES.HTTP_INSECURE_WARNING(url.href));
-            } else if (url.protocol !== 'https:') {
-                throw new Error(`Host must use HTTP or HTTPS protocol, got: ${url.protocol}`);
-            }
-
-            if (!url.hostname) {
-                throw new Error('Invalid host URL: missing hostname');
-            }
-
-            databricksHost = hostValidation.sanitized!;
+            const validated = validateAndCleanDatabricksCredentials(credentials);
+            databricksHost = validated.databricksHost;
+            token = validated.token;
         } catch (validationError: unknown) {
-            const errorMsg = validationError instanceof Error ? validationError.message : 'Invalid URL format';
+            const errorMsg = validationError instanceof Error ? validationError.message : 'Invalid credentials';
             throw new NodeOperationError(
                 this.getNode(),
-                ERROR_MESSAGES.INVALID_HOST_URL(rawHost, errorMsg)
+                errorMsg
             );
         }
 
-        const workflowId = this.getWorkflow().id;
-        const experimentName = `/Shared/n8n-workflows-${workflowId}`;
+        const experimentId = this.getNodeParameter('experiment_name', 0, '') as string;
 
-        let experimentId: string | undefined;
-
-        try {
-            // Initialize MLflow client for experiment management
-            const client = new mlflow.MlflowClient({
-                trackingUri: 'databricks',
-                host: databricksHost,
-                databricksToken: credentials.token as string,
-            });
-
-            try {
-                // Try to create experiment using SDK
-                experimentId = await client.createExperiment(experimentName);
-            } catch (createError: unknown) {
-                // Experiment already exists, get ID by name
-                // Note: MlflowClient doesn't have getExperimentByName method
-                const getResponse = await this.helpers.request({
-                    method: 'GET',
-                    url: `${databricksHost}/api/2.0/mlflow/experiments/get-by-name`,
-                    headers: {
-                        'Authorization': `Bearer ${credentials.token}`,
-                        'Content-Type': 'application/json',
-                    },
-                    qs: {
-                        experiment_name: experimentName,
-                    },
-                    json: true,
-                });
-
-                if (getResponse && getResponse.experiment && getResponse.experiment.experiment_id) {
-                    experimentId = getResponse.experiment.experiment_id;
-                } else {
-                    throw createError;
-                }
-            }
-
-            if (!experimentId) {
-                throw new Error('Failed to get or create experiment ID');
-            }
-
-            mlflow.init({
-                trackingUri: 'databricks',
-                experimentId: experimentId,
-                host: databricksHost,
-                databricksToken: credentials.token as string,
-            });
-        } catch (error: unknown) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            throw new NodeOperationError(
-                this.getNode(),
-                `Failed to setup MLflow experiment: ${maskTokensInText(errorMessage)}`
-            );
-        }
+        mlflow.init({
+            trackingUri: 'databricks',
+            experimentId: experimentId,
+            host: databricksHost,
+            databricksToken: token,
+        });
     }
 
     const returnData: INodeExecutionData[] = [];

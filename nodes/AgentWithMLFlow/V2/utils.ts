@@ -4,7 +4,15 @@ import {
     type INodeInputConfiguration,
     type INodeInputFilter,
     type NodeConnectionType,
+    NodeOperationError,
+    type ILoadOptionsFunctions,
+    type INodePropertyOptions,
 } from 'n8n-workflow';
+
+import { maskTokensInText } from '../src/utils/retry';
+
+import * as mlflow from "mlflow-tracing";
+import { validateAndCleanDatabricksCredentials } from '../src/utils/security';
 
 // display based on the agent type
 export function getInputs(
@@ -74,4 +82,70 @@ export function getInputs(
     // otherwise expression won't evaluate correctly on the FE
     const mainInputs = hasMainInput ? ['main' as NodeConnectionType] : [];
     return [...mainInputs, ...getInputData(specialInputs)];
+}
+
+export async function getExperimentName(values: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+
+        const credentials = await values.getCredentials('databricks');
+
+        const validated = validateAndCleanDatabricksCredentials(credentials);
+        const databricksHost = validated.databricksHost;
+        const token = validated.token;
+        const workflowId = values.getWorkflow().id;
+
+        const experimentName = `/Shared/n8n-workflows-${workflowId}`;
+
+        let experimentId: string | undefined;
+
+        try {
+            // Initialize MLflow client for experiment management
+            const client = new mlflow.MlflowClient({
+                trackingUri: 'databricks',
+                host: databricksHost,
+                databricksToken: token,
+            });
+
+            try {
+                // Try to create experiment using SDK
+                experimentId = await client.createExperiment(experimentName);
+            } catch (createError: unknown) {
+                // Experiment already exists, get ID by name
+                // Note: MlflowClient doesn't have getExperimentByName method
+                const getResponse = await values.helpers.request({
+                    method: 'GET',
+                    url: `${databricksHost}/api/2.0/mlflow/experiments/get-by-name`,
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json',
+                    },
+                    qs: {
+                        experiment_name: experimentName,
+                    },
+                    json: true,
+                });
+
+                if (getResponse && getResponse.experiment && getResponse.experiment.experiment_id) {
+                    experimentId = getResponse.experiment.experiment_id;
+                } else {
+                    throw createError;
+                }
+            }
+
+            if (!experimentId) {
+                throw new Error('Failed to get or create experiment ID');
+            }
+        } catch (error: unknown) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            throw new NodeOperationError(
+                values.getNode(),
+                `Failed to setup MLflow experiment: ${maskTokensInText(errorMessage)}`
+            );
+        }
+
+    return [
+        {
+            name: experimentName,
+            value: experimentId,
+        },
+    ];
 }

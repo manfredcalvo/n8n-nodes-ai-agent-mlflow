@@ -3,12 +3,14 @@ import type {
 	INodeExecutionData,
 	INodeType,
 	INodeTypeDescription,
+	ILoadOptionsFunctions,
+	INodePropertyOptions,
 } from 'n8n-workflow';
 
 import { promptTypeOptions, textFromPreviousNode, textInput } from './src/utils/descriptions';
 import { getToolsAgentProperties } from './V2/description';
 import { toolsAgentExecute } from './V2/execute';
-import { getInputs } from './V2/utils';
+import { getInputs, getExperimentName} from './V2/utils';
 
 export class AgentWithMLFlow implements INodeType {
 	description: INodeTypeDescription = {
@@ -114,17 +116,27 @@ export class AgentWithMLFlow implements INodeType {
 			default: false,
 			description: 'Whether to log agent execution traces to MLflow. Uses workflow ID as experiment name, creating it if needed.',
 		},
+		{
+			displayName: 'Experiment Name',
+			name: 'experiment_name',
+			type: 'options',
+			typeOptions: {
+				loadOptionsMethod: 'loadExperimentName',
+			},
+			default: "/Shared/n8n-workflows-undefined",
+			description: 'MLflow experiment name (calculated from credentials)',
+			displayOptions: {
+				show: {
+					enableMLflow: [true],
+				},
+			},
+		},
 			{
 				displayName: 'Enable Fallback Model',
 				name: 'needsFallback',
 				type: 'boolean',
 				default: false,
-				noDataExpression: true,
-				displayOptions: {
-					show: {
-						'@version': [{ _cnd: { gte: 2.1 } }],
-					},
-				},
+				noDataExpression: true
 			},
 			{
 				displayName:
@@ -153,6 +165,25 @@ export class AgentWithMLFlow implements INodeType {
 		],
 	};
 
+	methods = {
+		loadOptions: {
+			async loadExperimentName(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+				// This runs ONLY when dropdown is opened, NOT on every execution
+				try {
+					const result = await getExperimentName(this);
+					return result;
+				} catch (error) {
+					// If credentials are not available, return a default
+					return [
+						{
+							name: 'default_experiment',
+							value: 'default_experiment',
+						},
+					];
+				}
+			},
+		},
+	};
 
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		return await toolsAgentExecute.call(this);

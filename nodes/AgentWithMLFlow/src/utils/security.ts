@@ -4,7 +4,7 @@
  * Provides input validation and sanitization to protect against common security vulnerabilities.
  */
 
-import { SECURITY_PATTERNS } from '../constants';
+import { SECURITY_PATTERNS, MLFLOW_CONSTANTS, ERROR_MESSAGES } from '../constants';
 
 /**
  * Validation result with details
@@ -222,6 +222,100 @@ export function validateApiResponse(
 
 	return {
 		isValid: true,
+	};
+}
+
+/**
+ * Result of Databricks credentials validation
+ */
+export interface DatabricksCredentialsValidationResult {
+	databricksHost: string;
+	token: string;
+}
+
+/**
+ * Validates and cleans Databricks credentials (host and token)
+ *
+ * This function performs comprehensive validation including:
+ * - Token presence and length validation
+ * - Host URL format validation
+ * - SSRF protection
+ * - Protocol validation (HTTPS preferred)
+ *
+ * @param credentials - Raw credentials object containing host and token
+ * @returns Validated and cleaned credentials
+ * @throws Error if validation fails
+ *
+ * @example
+ * ```typescript
+ * const validated = validateAndCleanDatabricksCredentials(
+ *   { host: 'adb-123.azuredatabricks.net', token: 'dapi123...' }
+ * );
+ * // Returns: { databricksHost: 'https://adb-123.azuredatabricks.net', token: 'dapi123...' }
+ * ```
+ */
+export function validateAndCleanDatabricksCredentials(
+	credentials: { host?: unknown; token?: unknown }
+): DatabricksCredentialsValidationResult {
+	// Validate credentials object exists
+	if (!credentials) {
+		throw new Error(ERROR_MESSAGES.MISSING_CREDENTIALS);
+	}
+
+	// Validate host field
+	if (!credentials.host || typeof credentials.host !== 'string' || credentials.host.trim() === '') {
+		throw new Error(ERROR_MESSAGES.EMPTY_HOST);
+	}
+
+	// Validate token field
+	if (!credentials.token || typeof credentials.token !== 'string' || credentials.token.trim() === '') {
+		throw new Error(ERROR_MESSAGES.EMPTY_TOKEN);
+	}
+
+	const token = credentials.token as string;
+	const rawHost = credentials.host as string;
+
+	// Warn if token looks suspiciously short
+	if (token.length < MLFLOW_CONSTANTS.MIN_DATABRICKS_TOKEN_LENGTH) {
+		console.warn(ERROR_MESSAGES.SHORT_TOKEN_WARNING(token.length));
+	}
+
+	// Validate and clean Databricks host URL
+	const cleanedHost = rawHost.trim().replace(/\/$/, '');
+
+	// Handle case where user didn't include protocol
+	const hostWithProtocol = cleanedHost.startsWith('http')
+		? cleanedHost
+		: `https://${cleanedHost}`;
+
+	// Security validation: Check for SSRF and invalid hosts
+	const hostValidation = validateDatabricksHost(hostWithProtocol);
+	if (!hostValidation.isValid) {
+		throw new Error(hostValidation.error);
+	}
+
+	// Parse and validate URL structure
+	let url: URL;
+	try {
+		url = new URL(hostWithProtocol);
+	} catch {
+		throw new Error(`Invalid host URL format: ${rawHost}`);
+	}
+
+	// Warn if using HTTP instead of HTTPS
+	if (url.protocol === 'http:') {
+		console.warn(ERROR_MESSAGES.HTTP_INSECURE_WARNING(url.href));
+	} else if (url.protocol !== 'https:') {
+		throw new Error(`Host must use HTTP or HTTPS protocol, got: ${url.protocol}`);
+	}
+
+	if (!url.hostname) {
+		throw new Error('Invalid host URL: missing hostname');
+	}
+
+	return {
+		databricksHost: hostValidation.sanitized!,
+		token,
 	};
 }
 
